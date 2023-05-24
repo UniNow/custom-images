@@ -12,9 +12,5 @@ This image is built automatically when a new synapse version is released.
 
 You can pull the image by using
 ```bash
-docker pull alexbabel/synapse:VERSION
-```
-or use GHCR:
-```bash
-docker pull ghcr.io/alexanderbabel/synapse:VERSION
+docker pull ghcr.io/uninow/synapse:VERSION
 ```

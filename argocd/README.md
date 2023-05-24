@@ -10,9 +10,5 @@ This image is built automatically when a new argocd version is released.
 
 You can pull the image by using
 ```bash
-docker pull alexbabel/argocd:VERSION
-```
-or use GHCR:
-```bash
-docker pull ghcr.io/alexanderbabel/argocd:VERSION
+docker pull ghcr.io/uninow/argocd:VERSION
 ```
