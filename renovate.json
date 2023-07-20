@@ -20,7 +20,7 @@
     {
       "fileMatch": ["Dockerfile"],
       "matchStrings": [
-        "github\\.com\\/(?<depName>.*?)\\/releases\\/download\\/(?<currentValue>.*)\\/clickhouse.metabase-driver.jar",
+        "github\\.com\\/(?<depName>.*?)\\/releases\\/download\\/(?<currentValue>.*)\\/clickhouse\\.metabase-driver\\.jar",
         "github\\.com\\/(?<depName>.*?)\\/releases\\/download\\/(?<currentValue>.*)\\/sops-.*\\.linux",
         "github\\.com\\/(?<depName>.*?)\\/releases\\/download\\/.*\\/sops-(?<currentValue>.*)\\.linux",
         "github\\.com\\/(?<depName>.*?) --version (?<currentValue>.*)"
