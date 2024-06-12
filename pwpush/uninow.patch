@@ -1,0 +1,98 @@
+From b9b200aa578794dbe1ccb20bf93ee305e5a50fdd Mon Sep 17 00:00:00 2001
+From: taganich1 <anton.12345.123@gmail.com>
+Date: Mon, 3 Jun 2024 21:49:56 +0200
+Subject: [PATCH] fix(closes-OPE-93): remove additional settings
+
+---
+ app/assets/stylesheets/custom.css | 20 ++++++++++++++++++++
+ app/views/passwords/new.html.erb  | 16 ++++++++--------
+ 2 files changed, 28 insertions(+), 8 deletions(-)
+
+diff --git a/app/assets/stylesheets/custom.css b/app/assets/stylesheets/custom.css
+index 7183036bb2..db8fa756fd 100644
+--- a/app/assets/stylesheets/custom.css
++++ b/app/assets/stylesheets/custom.css
+@@ -12,3 +12,23 @@
+     background-color: #1acaca;
+ }
+ */
++
++
++/*
++    Remove password generator, passphrase-lockdown and other additional settings
++*/
++
++#password-settings-group {
++    display: none;
++}
++
++#passphrase-lockdown {
++    display: none;
++}
++
++#password-generator {
++    display: none;
++}
++#settings-save {
++    display: none;
++}
+diff --git a/app/views/passwords/new.html.erb b/app/views/passwords/new.html.erb
+index f77325139f..0e65a3c6d1 100644
+--- a/app/views/passwords/new.html.erb
++++ b/app/views/passwords/new.html.erb
+@@ -87,13 +87,13 @@
+                 </div>
+             </div>
+ 
+-            <div class='row mb-3'>
++            <div class='row mb-3' id="password-settings-group">
+                 <div class='col'>
+                     <div class="list-group mx-0">
+                         <% if Settings.pw.enable_retrieval_step %>
+                             <label class="list-group-item d-flex gap-2">
+                             <%= check_box_tag "password[retrieval_step]", nil, Settings.pw.retrieval_step_default,
+-                                            { class: 'form-check-input flex-shrink-0',
++                                             { class: 'form-check-input flex-shrink-0',
+                                               "data-knobs-target" => "retrievalStepCheckbox" } %>
+                             <span>
+                                 <%= _('Use a 1-click retrieval step') %>
+@@ -115,9 +115,9 @@
+                     </div>
+                 </div>
+             </div>
+-            <div class='row mb-3'>
++            <div class='row mb-3' id="passphrase-lockdown">
+                 <div class='col'>
+-                    <div class="input-group">
++                    <div class="input-group" >
+                         <span class="input-group-text"><%= _('Passphrase Lockdown') %></span>
+                         <%= f.text_field(:passphrase, { class: "form-control",
+                                                         autocomplete: "off",
+@@ -125,23 +125,23 @@
+                     </div>
+                 </div>
+             </div>
+-            <div class='row'>
++            <div class='row' id='settings-save'>
+                 <div class='col'>
+                     <p class='mb-3'>
+-                        <div id='cookie-save'>
++                        <div>
+                             <a data-action="click->knobs#saveSettings" href="#"><%= _('Save') %></a> <%= _('the above settings as the page default.') %>
+                         </div>
+                     </p>
+                 </div>
+             </div>
+         </div>
+-        <div class='col-12 col-sm-4 p-3 mt-3'>
++        <div class='col-12 col-sm-4 p-3 mt-3' id="password-generator" >
+             <div class="row mb-3">
+                 <div class="btn-group mb-3" role="group" aria-label="Password Generator button group with nested dropdown">
+                     <button class="btn btn-secondary w-75" type="button"
+                         id='generate_password'
+                         data-knobs-target="generatePasswordButton"
+-                        data-action="pwgen#producePassword passwords#updateCharacterCount"><em class="bi bi-cpu"></em> <%= _('Generate Password') %></button>
++                        data-action="pwgen#producePassword passwords#updateCharacterCount"><em class="bi bi-cpu"></em> <%= _('Generate Password kuku') %></button>
+                     <button class="btn btn-secondary" type="button" id='configure_generator'
+                         data-action="pwgen#configureGenerator"
+                         data-bs-toggle="modal" data-bs-target="#configureModal">
