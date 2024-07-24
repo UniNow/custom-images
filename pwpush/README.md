@@ -10,3 +10,9 @@ You can pull the image by using
 ```bash
 docker pull ghcr.io/uninow/pwpush:VERSION
 ```
+
+## How to update the patch file
+
+1. Go to the diff page between the [branches](https://github.com/pglombardo/PasswordPusher/compare/master...UniNow:PasswordPusher:master.diff)
+
+2. Copy the diff content and update the `uninow.patch` file

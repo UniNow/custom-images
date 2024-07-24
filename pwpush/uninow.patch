@@ -1,5 +1,5 @@
 diff --git a/app/assets/stylesheets/custom.css b/app/assets/stylesheets/custom.css
-index 7183036bb2..db8fa756fd 100644
+index 7183036bb2b..db8fa756fdb 100644
 --- a/app/assets/stylesheets/custom.css
 +++ b/app/assets/stylesheets/custom.css
 @@ -12,3 +12,23 @@
@@ -27,7 +27,7 @@ index 7183036bb2..db8fa756fd 100644
 +    display: none;
 +}
 diff --git a/app/views/passwords/new.html.erb b/app/views/passwords/new.html.erb
-index f77325139f..5888ef7b94 100644
+index f77325139f0..fce2e14a677 100644
 --- a/app/views/passwords/new.html.erb
 +++ b/app/views/passwords/new.html.erb
 @@ -87,13 +87,13 @@
@@ -79,3 +79,25 @@ index f77325139f..5888ef7b94 100644
              <div class="row mb-3">
                  <div class="btn-group mb-3" role="group" aria-label="Password Generator button group with nested dropdown">
                      <button class="btn btn-secondary w-75" type="button"
+@@ -172,7 +172,7 @@
+     <div class='row'>
+         <div class='col'>
+             <p class='my-3'>
+-                <button class="form-control btn btn-primary" type="submit" data-form-target="pushit" data-disable-with="Pushing..."><%= _('Push It!') %></button>
++                <button class="form-control btn btn-primary" type="submit" data-form-target="pushit" data-disable-with="Pushing..."><%= _('Link generieren!') %></button>
+             </p>
+         </div>
+     </div>
+diff --git a/app/views/passwords/preview.html.erb b/app/views/passwords/preview.html.erb
+index e4d078ace18..4bbf5c235ee 100644
+--- a/app/views/passwords/preview.html.erb
++++ b/app/views/passwords/preview.html.erb
+@@ -3,7 +3,7 @@
+ <div class="container h-75">
+     <div class="d-flex flex-column justify-content-center align-items-center">
+ 
+-      <h2 class='mt-5'><%= _('Your push has been created.') %></h2>
++      <h2 class='mt-5'><%= _('Der geheime Link wurde erstellt und kann jetzt geteilt werden') %></h2>
+ 
+       <p class='mt-5'><%= _('Use this secret link to share it:') %></p>
+       <%= render partial: 'shared/secret_url_bar' %>
