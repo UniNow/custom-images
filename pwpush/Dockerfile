@@ -17,3 +17,4 @@ RUN apk del git
 USER pwpusher
 
 RUN bundle exec rails assets:precompile
+
