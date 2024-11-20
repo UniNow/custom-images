@@ -1,4 +1,4 @@
-FROM pglombardo/pwpush:1.48.2
+FROM pglombardo/pwpush:1.49.0
 
 USER root
 
