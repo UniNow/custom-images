@@ -76,10 +76,10 @@ jobs:
           # Check if DLV_VERSION is present in the Dockerfile
           dlv_version=$(grep -oP '^ENV DLV_VERSION=\K.*' ${{ matrix.file }}/Dockerfile || true)
           if [ -n "$dlv_version" ]; then
-            echo ::set-output name=version::$dlv_version
+            echo "version=$dlv_version" >> $GITHUB_OUTPUT
           else
             # Fall back to extracting version from FROM statement
-            echo ::set-output name=version::$(sed -nr 's/^FROM .*:(.*)/\1/p' ${{ matrix.file }}/Dockerfile | tail -n 1)
+            echo "version=$(sed -nr 's/^FROM .*:(.*)/\1/p' ${{ matrix.file }}/Dockerfile | tail -n 1)" >> $GITHUB_OUTPUT
           fi
 
       - name: Docker meta
