@@ -72,7 +72,15 @@ jobs:
 
       - name: Retrieve version
         id: version
-        run: echo ::set-output name=version::$(sed -nr 's/^FROM .*:(.*)/\1/p' ${{ matrix.file }}/Dockerfile | tail -n 1)
+        run: |
+          # Check if DLV_VERSION is present in the Dockerfile
+          dlv_version=$(grep -oP '^ENV DLV_VERSION=\K.*' ${{ matrix.file }}/Dockerfile || true)
+          if [ -n "$dlv_version" ]; then
+            echo ::set-output name=version::$dlv_version
+          else
+            # Fall back to extracting version from FROM statement
+            echo ::set-output name=version::$(sed -nr 's/^FROM .*:(.*)/\1/p' ${{ matrix.file }}/Dockerfile | tail -n 1)
+          fi
 
       - name: Docker meta
         id: meta
