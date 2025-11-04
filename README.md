@@ -4,7 +4,10 @@ This mono repo includes custom docker images which are built to include custom e
 
 ## Images
 
-- [argocd](argocd) A tools for GitOps and CD for Kubernetes
+- [argocd](argocd) - A tool for GitOps and CD for Kubernetes with sops and helm-secrets plugin
+- [distroless-dlv](distroless-dlv) - A minimal distroless image containing the Go Delve debugger
+- [metabase](metabase) - Metabase analytics platform with ClickHouse driver plugin
+- [pwpush](pwpush) - Password Pusher service with custom UniNow patches
 
 ## Usage
 

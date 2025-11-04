@@ -15,3 +15,4 @@ EXPOSE 2345
 
 ENTRYPOINT ["/usr/local/bin/dlv"]
 CMD ["--help"]
+
