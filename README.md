@@ -5,7 +5,6 @@ This mono repo includes custom docker images which are built to include custom e
 ## Images
 
 - [argocd](argocd) A tools for GitOps and CD for Kubernetes
-- [synapse](synapse) A Matrix homeserver implementation
 
 ## Usage
 
