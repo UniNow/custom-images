@@ -7,12 +7,16 @@ WORKDIR /app
 
 RUN CGO_ENABLED=0 go install -ldflags '-extldflags -static' github.com/go-delve/delve/cmd/dlv@${DLV_VERSION}
 
+FROM busybox:1.37.0-uclibc AS busybox
+
 FROM gcr.io/distroless/static-debian12
 
 COPY --from=builder /go/bin/dlv /usr/local/bin/dlv
 
+COPY --from=busybox /bin/sh /bin/sh
+
+COPY entrypoint.sh /entrypoint.sh
+
 EXPOSE 2345
 
-ENTRYPOINT ["/usr/local/bin/dlv"]
-CMD ["--help"]
-
+ENTRYPOINT ["/entrypoint.sh"]
