@@ -11,9 +11,7 @@ FROM busybox:1.37.0-uclibc AS busybox
 
 FROM gcr.io/distroless/static-debian12
 
-COPY --from=busybox /bin/sh /bin/sh
-COPY --from=busybox /bin/chmod /bin/chmod
-COPY --from=busybox /bin/touch /bin/touch
+COPY --from=busybox /bin/sh /bin/chmod /bin/touch /bin/tar /bin/date /bin/
 
 COPY --from=builder /go/bin/dlv /usr/local/bin/dlv
 
