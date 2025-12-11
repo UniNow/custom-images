@@ -1,4 +1,4 @@
-FROM metabase/metabase:v0.57.5.8
+FROM metabase/metabase:v0.57.6
 
 ADD https://github.com/ClickHouse/metabase-clickhouse-driver/releases/download/1.53.4/clickhouse.metabase-driver.jar /plugins/
 
