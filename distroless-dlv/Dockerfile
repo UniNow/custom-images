@@ -1,6 +1,6 @@
 FROM golang:1.26 AS builder
 
-# datasource=github-releases depName=go-delve/delve
+# renovate: datasource=github-releases depName=go-delve/delve
 ENV DLV_VERSION=v1.26.0
 
 WORKDIR /app

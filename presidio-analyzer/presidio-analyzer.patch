@@ -1,0 +1,44 @@
+diff --git a/presidio-analyzer/presidio_analyzer/conf/default.yaml b/presidio-analyzer/presidio_analyzer/conf/default.yaml
+index 68c90c5c..5657abfd 100644
+--- a/presidio-analyzer/presidio_analyzer/conf/default.yaml
++++ b/presidio-analyzer/presidio_analyzer/conf/default.yaml
+@@ -3,6 +3,9 @@ models:
+   -
+     lang_code: en
+     model_name: en_core_web_lg
++  - 
++    lang_code: de
++    model_name: de_core_news_lg
+ 
+ ner_model_configuration:
+   model_to_presidio_entity_mapping:
+diff --git a/presidio-analyzer/presidio_analyzer/conf/default_analyzer.yaml b/presidio-analyzer/presidio_analyzer/conf/default_analyzer.yaml
+index 8cdc5e5d..fb50b845 100644
+--- a/presidio-analyzer/presidio_analyzer/conf/default_analyzer.yaml
++++ b/presidio-analyzer/presidio_analyzer/conf/default_analyzer.yaml
+@@ -1,3 +1,4 @@
+ supported_languages: 
+   - en
++  - de
+ default_score_threshold: 0
+\ No newline at end of file
+diff --git a/presidio-analyzer/presidio_analyzer/conf/default_recognizers.yaml b/presidio-analyzer/presidio_analyzer/conf/default_recognizers.yaml
+index 9e57e603..9c30f809 100644
+--- a/presidio-analyzer/presidio_analyzer/conf/default_recognizers.yaml
++++ b/presidio-analyzer/presidio_analyzer/conf/default_recognizers.yaml
+@@ -1,5 +1,6 @@
+ supported_languages: 
+   - en
++  - de
+ global_regex_flags: 26
+ 
+ recognizers:
+@@ -20,6 +21,8 @@ recognizers:
+       context: [credit, card, visa, mastercard, cc, amex, discover, jcb, diners, maestro, instapayment]
+     - language: es
+       context: [tarjeta, credito, visa, mastercard, cc, amex, discover, jcb, diners, maestro, instapayment]
++    - language: de
++      context: [karte, kredit, visa, mastercard, cc, amex, discover, jcb, diners, maestro, instapayment]
+     - language: it
+     - language: pl
+     type: predefined
