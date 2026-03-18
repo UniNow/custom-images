@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # renovate: datasource=github-releases depName=microsoft/presidio
-      PRESIDIO_VERSION: 2.2.361
+      PRESIDIO_VERSION: 2.2.362
 
     steps:
       - name: Checkout
