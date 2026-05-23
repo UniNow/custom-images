@@ -7,7 +7,7 @@ WORKDIR /app
 
 RUN CGO_ENABLED=0 go install -ldflags '-extldflags -static' github.com/go-delve/delve/cmd/dlv@${DLV_VERSION}
 
-FROM busybox:1.37.0-uclibc AS busybox
+FROM busybox:1.38.0-uclibc AS busybox
 
 FROM gcr.io/distroless/static-debian12
 
