@@ -7,7 +7,7 @@ WORKDIR /app
 
 RUN CGO_ENABLED=0 go install github.com/go-delve/delve/cmd/dlv@${DLV_VERSION}
 
-FROM debian:12-slim
+FROM debian:13-slim
 
 COPY --from=builder /go/bin/dlv /usr/local/bin/dlv
 
