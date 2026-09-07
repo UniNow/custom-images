@@ -6,6 +6,7 @@ This mono repo includes custom docker images which are built to include custom e
 
 - [argocd](argocd) - A tool for GitOps and CD for Kubernetes with sops and helm-secrets plugin
 - [distroless-dlv](distroless-dlv) - A minimal distroless image containing the Go Delve debugger
+- [kratos](kratos) - Ory Kratos built from the upstream release with the UniNow patch (OIDC token capture, feature-flag config key)
 - [metabase](metabase) - Metabase analytics platform with ClickHouse driver plugin
 - [pwpush](pwpush) - Password Pusher service with custom UniNow patches
 
