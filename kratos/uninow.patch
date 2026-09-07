@@ -1,0 +1,1211 @@
+diff --git a/.schemastore/config.schema.json b/.schemastore/config.schema.json
+index 2d2740d8e..7b06df990 100644
+--- a/.schemastore/config.schema.json
++++ b/.schemastore/config.schema.json
+@@ -602,6 +602,13 @@
+           "type": "string",
+           "enum": ["confirm_with_existing_credential", "automatic"],
+           "default": "confirm_with_existing_credential"
++        },
++        "capture_last_tokens": {
++          "title": "Capture Last Tokens",
++          "description": "Controls whether to capture and store the last tokens received during login. When enabled, the LastIDToken, LastAccessToken, and LastRefreshToken fields will be updated on each successful login.",
++          "type": "boolean",
++          "default": false,
++          "examples": [true, false]
+         }
+       },
+       "additionalProperties": false,
+diff --git a/README.md b/README.md
+index 837e3c6f4..5a6038efc 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,18 @@
++# UniNow Build
++
++This fork carries UniNow-specific patches on top of an upstream Ory Kratos release tag.
++Build and push the multi-arch image (bump the suffix for every rebuild of the same upstream version):
++
++```
++VERSION=v26.2.0-1
++docker buildx build --platform linux/arm64,linux/amd64 --push \
++  -f .docker/Dockerfile-build \
++  --build-arg VERSION=$VERSION \
++  --build-arg COMMIT=$(git rev-parse --short HEAD) \
++  --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
++  -t ghcr.io/uninow/kratos:$VERSION .
++```
++
+ <h1 align="center">
+   <img src="https://raw.githubusercontent.com/ory/meta/master/static/banners/kratos.svg" alt="Ory Kratos - Cloud native identity and user management">
+ </h1>
+diff --git a/cmd/identities/get_test.go b/cmd/identities/get_test.go
+index ef45db0f1..114272a3b 100644
+--- a/cmd/identities/get_test.go
++++ b/cmd/identities/get_test.go
+@@ -79,6 +79,9 @@ func TestGetCmd(t *testing.T) {
+ 						InitialAccessToken:  transform(accessToken + "0"),
+ 						InitialRefreshToken: transform(refreshToken + "0"),
+ 						InitialIDToken:      transform(idToken + "0"),
++						LastAccessToken:     transform(accessToken + "0"),
++						LastRefreshToken:    transform(refreshToken + "0"),
++						LastIDToken:         transform(idToken + "0"),
+ 						Organization:        "foo-org-id",
+ 					},
+ 					{
+@@ -87,6 +90,9 @@ func TestGetCmd(t *testing.T) {
+ 						InitialAccessToken:  transform(accessToken + "1"),
+ 						InitialRefreshToken: transform(refreshToken + "1"),
+ 						InitialIDToken:      transform(idToken + "1"),
++						LastAccessToken:     transform(accessToken + "1"),
++						LastRefreshToken:    transform(refreshToken + "1"),
++						LastIDToken:         transform(idToken + "1"),
+ 						Organization:        "bar-org-id",
+ 					},
+ 				}}),
+diff --git a/driver/config/config.go b/driver/config/config.go
+index 650edf332..f540eb664 100644
+--- a/driver/config/config.go
++++ b/driver/config/config.go
+@@ -105,6 +105,7 @@ const (
+ 	ViperKeyUseLegacyShowVerificationUI                      = "feature_flags.legacy_continue_with_verification_ui"
+ 	ViperKeyLegacyOIDCRegistrationGroup                      = "feature_flags.legacy_oidc_registration_node_group"
+ 	ViperKeyUseLegacyRequireVerifiedLoginError               = "feature_flags.legacy_require_verified_login_error"
++	ViperKeyPasswordRegistrationProfileGroup                 = "feature_flags.password_profile_registration_node_group"
+ 	ViperKeySessionRefreshMinTimeLeft                        = "session.earliest_possible_extend"
+ 	ViperKeyCookieSameSite                                   = "cookies.same_site"
+ 	ViperKeyCookieDomain                                     = "cookies.domain"
+@@ -176,7 +177,6 @@ const (
+ 	ViperKeyPasswordMinLength                                = "selfservice.methods.password.config.min_password_length"
+ 	ViperKeyPasswordIdentifierSimilarityCheckEnabled         = "selfservice.methods.password.config.identifier_similarity_check_enabled"
+ 	ViperKeyIgnoreNetworkErrors                              = "selfservice.methods.password.config.ignore_network_errors"
+-	ViperKeyPasswordRegistrationProfileGroup                 = "selfservice.methods.password.config.password_profile_registration_node_group"
+ 	ViperKeyTOTPIssuer                                       = "selfservice.methods.totp.config.issuer"
+ 	ViperKeyOIDCBaseRedirectURL                              = "selfservice.methods.oidc.config.base_redirect_uri"
+ 	ViperKeySAMLBaseRedirectURL                              = "selfservice.methods.saml.config.base_redirect_uri"
+diff --git a/embedx/config.schema.json b/embedx/config.schema.json
+index 4cddaca67..8811e01a6 100644
+--- a/embedx/config.schema.json
++++ b/embedx/config.schema.json
+@@ -602,6 +602,13 @@
+           "type": "string",
+           "enum": ["confirm_with_existing_credential", "automatic"],
+           "default": "confirm_with_existing_credential"
++        },
++        "capture_last_tokens": {
++          "title": "Capture Last Tokens",
++          "description": "Controls whether to capture and store the last tokens received during login. When enabled, the LastIDToken, LastAccessToken, and LastRefreshToken fields will be updated on each successful login.",
++          "type": "boolean",
++          "default": false,
++          "examples": [true, false]
+         }
+       },
+       "additionalProperties": false,
+diff --git a/identity/.snapshots/TestHandler-case=should_be_able_to_import_users-with_cleartext_password_and_oidc_credentials.json b/identity/.snapshots/TestHandler-case=should_be_able_to_import_users-with_cleartext_password_and_oidc_credentials.json
+index 5edf83e8e..ee4fef538 100644
+--- a/identity/.snapshots/TestHandler-case=should_be_able_to_import_users-with_cleartext_password_and_oidc_credentials.json
++++ b/identity/.snapshots/TestHandler-case=should_be_able_to_import_users-with_cleartext_password_and_oidc_credentials.json
+@@ -9,14 +9,20 @@
+             "provider": "google",
+             "initial_id_token": "",
+             "initial_access_token": "",
+-            "initial_refresh_token": ""
++            "initial_refresh_token": "",
++            "last_id_token": "",
++            "last_access_token": "",
++            "last_refresh_token": ""
+           },
+           {
+             "subject": "import-2",
+             "provider": "github",
+             "initial_id_token": "",
+             "initial_access_token": "",
+-            "initial_refresh_token": ""
++            "initial_refresh_token": "",
++            "last_id_token": "",
++            "last_access_token": "",
++            "last_refresh_token": ""
+           }
+         ]
+       },
+@@ -44,14 +50,20 @@
+             "provider": "okta",
+             "initial_id_token": "",
+             "initial_access_token": "",
+-            "initial_refresh_token": ""
++            "initial_refresh_token": "",
++            "last_id_token": "",
++            "last_access_token": "",
++            "last_refresh_token": ""
+           },
+           {
+             "subject": "import-saml-2",
+             "provider": "onelogin",
+             "initial_id_token": "",
+             "initial_access_token": "",
+-            "initial_refresh_token": ""
++            "initial_refresh_token": "",
++            "last_id_token": "",
++            "last_access_token": "",
++            "last_refresh_token": ""
+           }
+         ]
+       },
+diff --git a/identity/.snapshots/TestHandler-case=should_be_able_to_import_users-with_organization_oidc_and_saml_credentials.json b/identity/.snapshots/TestHandler-case=should_be_able_to_import_users-with_organization_oidc_and_saml_credentials.json
+index c53957d6f..ba5852da4 100644
+--- a/identity/.snapshots/TestHandler-case=should_be_able_to_import_users-with_organization_oidc_and_saml_credentials.json
++++ b/identity/.snapshots/TestHandler-case=should_be_able_to_import_users-with_organization_oidc_and_saml_credentials.json
+@@ -10,6 +10,9 @@
+             "initial_id_token": "",
+             "initial_access_token": "",
+             "initial_refresh_token": "",
++            "last_id_token": "",
++            "last_access_token": "",
++            "last_refresh_token": "",
+             "organization": "ad6a7dac-4eef-4f09-8e58-c099c14b6c36"
+           },
+           {
+@@ -18,6 +21,9 @@
+             "initial_id_token": "",
+             "initial_access_token": "",
+             "initial_refresh_token": "",
++            "last_id_token": "",
++            "last_access_token": "",
++            "last_refresh_token": "",
+             "organization": "ad6a7dac-4eef-4f09-8e58-c099c14b6c36"
+           }
+         ]
+@@ -46,6 +52,9 @@
+             "initial_id_token": "",
+             "initial_access_token": "",
+             "initial_refresh_token": "",
++            "last_id_token": "",
++            "last_access_token": "",
++            "last_refresh_token": "",
+             "organization": "ad6a7dac-4eef-4f09-8e58-c099c14b6c36"
+           },
+           {
+@@ -54,6 +63,9 @@
+             "initial_id_token": "",
+             "initial_access_token": "",
+             "initial_refresh_token": "",
++            "last_id_token": "",
++            "last_access_token": "",
++            "last_refresh_token": "",
+             "organization": "ad6a7dac-4eef-4f09-8e58-c099c14b6c36"
+           }
+         ]
+diff --git a/identity/.snapshots/TestHandler-case=should_list_all_identities_with_credentials-include_credential=oidc_should_include_OIDC_credentials_config.json b/identity/.snapshots/TestHandler-case=should_list_all_identities_with_credentials-include_credential=oidc_should_include_OIDC_credentials_config.json
+index a9624ceed..e9aeb3189 100644
+--- a/identity/.snapshots/TestHandler-case=should_list_all_identities_with_credentials-include_credential=oidc_should_include_OIDC_credentials_config.json
++++ b/identity/.snapshots/TestHandler-case=should_list_all_identities_with_credentials-include_credential=oidc_should_include_OIDC_credentials_config.json
+@@ -1 +1 @@
+-"{\"providers\":[{\"initial_id_token\":\"id_token0\",\"initial_access_token\":\"access_token0\",\"initial_refresh_token\":\"refresh_token0\",\"subject\":\"foo\",\"provider\":\"bar\"},{\"initial_id_token\":\"id_token1\",\"initial_access_token\":\"access_token1\",\"initial_refresh_token\":\"refresh_token1\",\"subject\":\"baz\",\"provider\":\"zab\"}]}"
++"{\"providers\":[{\"initial_id_token\":\"id_token0\",\"initial_access_token\":\"access_token0\",\"initial_refresh_token\":\"refresh_token0\",\"last_id_token\":\"id_token_current0\",\"last_access_token\":\"access_token_current0\",\"last_refresh_token\":\"refresh_token_current0\",\"subject\":\"foo\",\"provider\":\"bar\"},{\"initial_id_token\":\"id_token1\",\"initial_access_token\":\"access_token1\",\"initial_refresh_token\":\"refresh_token1\",\"last_id_token\":\"id_token_current1\",\"last_access_token\":\"access_token_current1\",\"last_refresh_token\":\"refresh_token_current1\",\"subject\":\"baz\",\"provider\":\"zab\"}]}"
+diff --git a/identity/.snapshots/TestImportCredentials-OIDC_new_credential_with_organization.json b/identity/.snapshots/TestImportCredentials-OIDC_new_credential_with_organization.json
+index f33b9ef83..923466897 100644
+--- a/identity/.snapshots/TestImportCredentials-OIDC_new_credential_with_organization.json
++++ b/identity/.snapshots/TestImportCredentials-OIDC_new_credential_with_organization.json
+@@ -11,6 +11,9 @@
+         "initial_id_token": "",
+         "initial_access_token": "",
+         "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": "",
+         "organization": "e7e3cbae-04cc-45f3-ae52-ea749a2ffaff"
+       }
+     ]
+diff --git a/identity/.snapshots/TestImportCredentials-OIDC_new_credential_without_organization.json b/identity/.snapshots/TestImportCredentials-OIDC_new_credential_without_organization.json
+index d22cba0ea..88508142e 100644
+--- a/identity/.snapshots/TestImportCredentials-OIDC_new_credential_without_organization.json
++++ b/identity/.snapshots/TestImportCredentials-OIDC_new_credential_without_organization.json
+@@ -10,7 +10,10 @@
+         "provider": "github",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       }
+     ]
+   },
+diff --git a/identity/.snapshots/TestImportCredentials-OIDC_update_credential_with_organization.json b/identity/.snapshots/TestImportCredentials-OIDC_update_credential_with_organization.json
+index 8992fa21e..5e3416a6a 100644
+--- a/identity/.snapshots/TestImportCredentials-OIDC_update_credential_with_organization.json
++++ b/identity/.snapshots/TestImportCredentials-OIDC_update_credential_with_organization.json
+@@ -11,7 +11,10 @@
+         "provider": "google",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       },
+       {
+         "subject": "12345",
+@@ -19,6 +22,9 @@
+         "initial_id_token": "",
+         "initial_access_token": "",
+         "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": "",
+         "organization": "e7e3cbae-04cc-45f3-ae52-ea749a2ffaff"
+       }
+     ]
+diff --git a/identity/.snapshots/TestImportCredentials-OIDC_update_credential_without_organization.json b/identity/.snapshots/TestImportCredentials-OIDC_update_credential_without_organization.json
+index c227d75fd..f4897a190 100644
+--- a/identity/.snapshots/TestImportCredentials-OIDC_update_credential_without_organization.json
++++ b/identity/.snapshots/TestImportCredentials-OIDC_update_credential_without_organization.json
+@@ -11,14 +11,20 @@
+         "provider": "google",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       },
+       {
+         "subject": "12345",
+         "provider": "github",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       }
+     ]
+   },
+diff --git a/identity/.snapshots/TestImportCredentials-OIDC_update_with_multiple_providers.json b/identity/.snapshots/TestImportCredentials-OIDC_update_with_multiple_providers.json
+index 3d8779c9b..b24985b1c 100644
+--- a/identity/.snapshots/TestImportCredentials-OIDC_update_with_multiple_providers.json
++++ b/identity/.snapshots/TestImportCredentials-OIDC_update_with_multiple_providers.json
+@@ -12,7 +12,10 @@
+         "provider": "google",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       },
+       {
+         "subject": "12345",
+@@ -20,6 +23,9 @@
+         "initial_id_token": "",
+         "initial_access_token": "",
+         "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": "",
+         "organization": "e7e3cbae-04cc-45f3-ae52-ea749a2ffaff"
+       },
+       {
+@@ -27,7 +33,10 @@
+         "provider": "gitlab",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       }
+     ]
+   },
+diff --git a/identity/.snapshots/TestImportCredentials-SAML_new_credential_with_organization.json b/identity/.snapshots/TestImportCredentials-SAML_new_credential_with_organization.json
+index 2d67d7816..ed65b4bbb 100644
+--- a/identity/.snapshots/TestImportCredentials-SAML_new_credential_with_organization.json
++++ b/identity/.snapshots/TestImportCredentials-SAML_new_credential_with_organization.json
+@@ -11,6 +11,9 @@
+         "initial_id_token": "",
+         "initial_access_token": "",
+         "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": "",
+         "organization": "e7e3cbae-04cc-45f3-ae52-ea749a2ffaff"
+       }
+     ]
+diff --git a/identity/.snapshots/TestImportCredentials-SAML_new_credential_without_organization.json b/identity/.snapshots/TestImportCredentials-SAML_new_credential_without_organization.json
+index 934659cc8..4318f8e75 100644
+--- a/identity/.snapshots/TestImportCredentials-SAML_new_credential_without_organization.json
++++ b/identity/.snapshots/TestImportCredentials-SAML_new_credential_without_organization.json
+@@ -10,7 +10,10 @@
+         "provider": "okta",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       }
+     ]
+   },
+diff --git a/identity/.snapshots/TestImportCredentials-SAML_update_credential_with_organization.json b/identity/.snapshots/TestImportCredentials-SAML_update_credential_with_organization.json
+index c79f1f79e..b3f203342 100644
+--- a/identity/.snapshots/TestImportCredentials-SAML_update_credential_with_organization.json
++++ b/identity/.snapshots/TestImportCredentials-SAML_update_credential_with_organization.json
+@@ -11,7 +11,10 @@
+         "provider": "onelogin",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       },
+       {
+         "subject": "user123",
+@@ -19,6 +22,9 @@
+         "initial_id_token": "",
+         "initial_access_token": "",
+         "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": "",
+         "organization": "e7e3cbae-04cc-45f3-ae52-ea749a2ffaff"
+       }
+     ]
+diff --git a/identity/.snapshots/TestImportCredentials-SAML_update_credential_without_organization.json b/identity/.snapshots/TestImportCredentials-SAML_update_credential_without_organization.json
+index 1e3e1a283..3a356dbe4 100644
+--- a/identity/.snapshots/TestImportCredentials-SAML_update_credential_without_organization.json
++++ b/identity/.snapshots/TestImportCredentials-SAML_update_credential_without_organization.json
+@@ -11,14 +11,20 @@
+         "provider": "onelogin",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       },
+       {
+         "subject": "user123",
+         "provider": "okta",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       }
+     ]
+   },
+diff --git a/identity/.snapshots/TestImportCredentials-SAML_update_with_multiple_providers.json b/identity/.snapshots/TestImportCredentials-SAML_update_with_multiple_providers.json
+index d5bdd5db6..11dde2f55 100644
+--- a/identity/.snapshots/TestImportCredentials-SAML_update_with_multiple_providers.json
++++ b/identity/.snapshots/TestImportCredentials-SAML_update_with_multiple_providers.json
+@@ -12,7 +12,10 @@
+         "provider": "onelogin",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       },
+       {
+         "subject": "user123",
+@@ -20,6 +23,9 @@
+         "initial_id_token": "",
+         "initial_access_token": "",
+         "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": "",
+         "organization": "e7e3cbae-04cc-45f3-ae52-ea749a2ffaff"
+       },
+       {
+@@ -27,7 +33,10 @@
+         "provider": "auth0",
+         "initial_id_token": "",
+         "initial_access_token": "",
+-        "initial_refresh_token": ""
++        "initial_refresh_token": "",
++        "last_id_token": "",
++        "last_access_token": "",
++        "last_refresh_token": ""
+       }
+     ]
+   },
+diff --git a/identity/.snapshots/TestWithDeclassifiedCredentials-case=oidc-credential=oidc.json b/identity/.snapshots/TestWithDeclassifiedCredentials-case=oidc-credential=oidc.json
+index 935daa2bb..911f2966f 100644
+--- a/identity/.snapshots/TestWithDeclassifiedCredentials-case=oidc-credential=oidc.json
++++ b/identity/.snapshots/TestWithDeclassifiedCredentials-case=oidc-credential=oidc.json
+@@ -10,6 +10,9 @@
+         "initial_id_token": "foo",
+         "initial_access_token": "",
+         "initial_refresh_token": "",
++        "last_id_token": "foo",
++        "last_access_token": "",
++        "last_refresh_token": "",
+         "subject": "bar",
+         "provider": "oidc1"
+       }
+diff --git a/identity/credentials.go b/identity/credentials.go
+index e7868d2ae..6d7da7da0 100644
+--- a/identity/credentials.go
++++ b/identity/credentials.go
+@@ -4,6 +4,7 @@
+ package identity
+ 
+ import (
++	"bytes"
+ 	"context"
+ 	"database/sql"
+ 	"encoding/json"
+@@ -13,6 +14,8 @@ import (
+ 	"strings"
+ 	"time"
+ 
++	"github.com/pkg/errors"
++
+ 	"github.com/gofrs/uuid"
+ 	"github.com/wI2L/jsondiff"
+ 
+@@ -195,6 +198,10 @@ func (c Credentials) GetID() uuid.UUID {
+ 	return c.ID
+ }
+ 
++func (c Credentials) UnmarshalConfig(target interface{}) error {
++	return errors.WithStack(json.NewDecoder(bytes.NewBuffer(c.Config)).Decode(&target))
++}
++
+ // Signature returns a unique string signature for the credential.
+ func (c Credentials) Signature() string {
+ 	sortedIdentifiers := slices.Clone(c.Identifiers)
+diff --git a/identity/credentials_oidc.go b/identity/credentials_oidc.go
+index 8a8ab1c11..c5be5871a 100644
+--- a/identity/credentials_oidc.go
++++ b/identity/credentials_oidc.go
+@@ -20,7 +20,7 @@ type CredentialsOIDC struct {
+ 	Providers []CredentialsOIDCProvider `json:"providers"`
+ }
+ 
+-// CredentialsOIDCProvider is contains a specific OpenID COnnect credential for a particular connection (e.g. Google).
++// CredentialsOIDCProvider is contains a specific OpenID Connect credential for a particular connection (e.g. Google).
+ //
+ // swagger:model identityCredentialsOidcProvider
+ type CredentialsOIDCProvider struct {
+@@ -29,6 +29,9 @@ type CredentialsOIDCProvider struct {
+ 	InitialIDToken      string `json:"initial_id_token"`
+ 	InitialAccessToken  string `json:"initial_access_token"`
+ 	InitialRefreshToken string `json:"initial_refresh_token"`
++	LastIDToken         string `json:"last_id_token"`
++	LastAccessToken     string `json:"last_access_token"`
++	LastRefreshToken    string `json:"last_refresh_token"`
+ 	Organization        string `json:"organization,omitempty"`
+ 	UseAutoLink         bool   `json:"use_auto_link,omitzero"`
+ }
+@@ -85,6 +88,9 @@ func NewOIDCLikeCredentials(tokens *CredentialsOIDCEncryptedTokens, t Credential
+ 				InitialIDToken:      tokens.GetIDToken(),
+ 				InitialAccessToken:  tokens.GetAccessToken(),
+ 				InitialRefreshToken: tokens.GetRefreshToken(),
++				LastIDToken:         tokens.GetIDToken(),
++				LastAccessToken:     tokens.GetAccessToken(),
++				LastRefreshToken:    tokens.GetRefreshToken(),
+ 				Organization:        organization,
+ 			},
+ 		},
+@@ -112,6 +118,15 @@ func OIDCUniqueID(provider, subject string) string {
+ 	return fmt.Sprintf("%s:%s", provider, subject)
+ }
+ 
++func (c *CredentialsOIDC) GetProvider(provider, subject string) (k int, found bool) {
++	for k, p := range c.Providers {
++		if p.Subject == subject && p.Provider == provider {
++			return k, true
++		}
++	}
++	return -1, false
++}
++
+ func (c *CredentialsOIDC) Organization() string {
+ 	for _, p := range c.Providers {
+ 		if p.Organization != "" {
+diff --git a/identity/credentials_oidc_test.go b/identity/credentials_oidc_test.go
+index f52a077d1..291c10fea 100644
+--- a/identity/credentials_oidc_test.go
++++ b/identity/credentials_oidc_test.go
+@@ -17,3 +17,26 @@ func TestNewCredentialsOIDC(t *testing.T) {
+ 	_, err = NewCredentialsOIDC(new(CredentialsOIDCEncryptedTokens), "not-empty", "not-empty", "")
+ 	require.NoError(t, err)
+ }
++
++func TestGetProvider(t *testing.T) {
++	c := CredentialsOIDC{
++		Providers: []CredentialsOIDCProvider{
++			{
++				Subject:  "user-a",
++				Provider: "google",
++			},
++			{
++				Subject:  "user-a",
++				Provider: "github",
++			},
++		},
++	}
++
++	k, found := c.GetProvider("github", "user-a")
++	require.True(t, found)
++	require.Equal(t, 1, k)
++
++	k, found = c.GetProvider("not-found", "user-a")
++	require.False(t, found)
++	require.Equal(t, -1, k)
++}
+diff --git a/identity/handler_test.go b/identity/handler_test.go
+index e0c3df81b..cae685a50 100644
+--- a/identity/handler_test.go
++++ b/identity/handler_test.go
+@@ -547,6 +547,9 @@ func TestHandler(t *testing.T) {
+ 								InitialAccessToken:  transform(accessToken, "0"),
+ 								InitialRefreshToken: transform(refreshToken, "0"),
+ 								InitialIDToken:      transform(idToken, "0"),
++								LastAccessToken:     transform(accessToken, "_current0"),
++								LastRefreshToken:    transform(refreshToken, "_current0"),
++								LastIDToken:         transform(idToken, "_current0"),
+ 							},
+ 							{
+ 								Subject:             "baz",
+@@ -554,6 +557,9 @@ func TestHandler(t *testing.T) {
+ 								InitialAccessToken:  transform(accessToken, "1"),
+ 								InitialRefreshToken: transform(refreshToken, "1"),
+ 								InitialIDToken:      transform(idToken, "1"),
++								LastAccessToken:     transform(accessToken, "_current1"),
++								LastRefreshToken:    transform(refreshToken, "_current1"),
++								LastIDToken:         transform(idToken, "_current1"),
+ 							},
+ 						}}),
+ 					},
+@@ -694,11 +700,17 @@ func TestHandler(t *testing.T) {
+ 					assert.EqualValues(t, "access_token0", res.Get("credentials.oidc.config.providers.0.initial_access_token").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "refresh_token0", res.Get("credentials.oidc.config.providers.0.initial_refresh_token").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "id_token0", res.Get("credentials.oidc.config.providers.0.initial_id_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "access_token_current0", res.Get("credentials.oidc.config.providers.0.last_access_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "refresh_token_current0", res.Get("credentials.oidc.config.providers.0.last_refresh_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "id_token_current0", res.Get("credentials.oidc.config.providers.0.last_id_token").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "baz", res.Get("credentials.oidc.config.providers.1.subject").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "zab", res.Get("credentials.oidc.config.providers.1.provider").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "access_token1", res.Get("credentials.oidc.config.providers.1.initial_access_token").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "refresh_token1", res.Get("credentials.oidc.config.providers.1.initial_refresh_token").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "id_token1", res.Get("credentials.oidc.config.providers.1.initial_id_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "access_token_current1", res.Get("credentials.oidc.config.providers.1.last_access_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "refresh_token_current1", res.Get("credentials.oidc.config.providers.1.last_refresh_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "id_token_current1", res.Get("credentials.oidc.config.providers.1.last_id_token").String(), "credentials should be included: %s", res.Raw)
+ 				})
+ 			}
+ 		})
+@@ -754,11 +766,17 @@ func TestHandler(t *testing.T) {
+ 					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.0.initial_access_token").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.0.initial_refresh_token").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.0.initial_id_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.0.last_access_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.0.last_refresh_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.0.last_id_token").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "baz", res.Get("credentials.oidc.config.providers.1.subject").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "zab", res.Get("credentials.oidc.config.providers.1.provider").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.1.initial_access_token").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.1.initial_refresh_token").String(), "credentials should be included: %s", res.Raw)
+ 					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.1.initial_id_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.1.last_access_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.1.last_refresh_token").String(), "credentials should be included: %s", res.Raw)
++					assert.EqualValues(t, "", res.Get("credentials.oidc.config.providers.1.last_id_token").String(), "credentials should be included: %s", res.Raw)
+ 				})
+ 			}
+ 		})
+@@ -818,6 +836,9 @@ func TestHandler(t *testing.T) {
+ 					assert.Equal(t, "", res.Get("credentials.oidc.config.providers.0.initial_access_token").String(), "%s", res.Raw)
+ 					assert.Equal(t, "", res.Get("credentials.oidc.config.providers.0.initial_id_token").String(), "%s", res.Raw)
+ 					assert.Equal(t, "", res.Get("credentials.oidc.config.providers.0.initial_refresh_token").String(), "%s", res.Raw)
++					assert.Equal(t, "", res.Get("credentials.oidc.config.providers.0.last_access_token").String(), "%s", res.Raw)
++					assert.Equal(t, "", res.Get("credentials.oidc.config.providers.0.last_id_token").String(), "%s", res.Raw)
++					assert.Equal(t, "", res.Get("credentials.oidc.config.providers.0.last_refresh_token").String(), "%s", res.Raw)
+ 				})
+ 			}
+ 		})
+diff --git a/identity/identity.go b/identity/identity.go
+index 5a5e8e53b..5595f2913 100644
+--- a/identity/identity.go
++++ b/identity/identity.go
+@@ -493,7 +493,7 @@ func (i *Identity) WithDeclassifiedCredentials(ctx context.Context, c cipher.Pro
+ 			gjson.GetBytes(original.Config, "providers").ForEach(func(_, v gjson.Result) bool {
+ 				if ct == CredentialsTypeOIDC {
+ 					// Don't expose these for SAML
+-					for _, token := range []string{"initial_id_token", "initial_access_token", "initial_refresh_token"} {
++					for _, token := range []string{"initial_id_token", "initial_access_token", "initial_refresh_token", "last_id_token", "last_access_token", "last_refresh_token"} {
+ 						key := fmt.Sprintf("%d.%s", i, token)
+ 						ciphertext := v.Get(token).String()
+ 
+diff --git a/identity/identity_test.go b/identity/identity_test.go
+index cccdf5bc1..e4311438e 100644
+--- a/identity/identity_test.go
++++ b/identity/identity_test.go
+@@ -365,7 +365,7 @@ func TestWithDeclassifiedCredentials(t *testing.T) {
+ 			Identifiers: []string{"bar", "baz"},
+ 			// hint:
+ 			//	echo '666f6f' | xxd -r -p
+-			Config: sqlxx.JSONRawMessage(`{"providers": [{"subject":"bar","provider":"oidc1","initial_id_token":"666f6f"}]}`),
++			Config: sqlxx.JSONRawMessage(`{"providers": [{"subject":"bar","provider":"oidc1","initial_id_token":"666f6f","last_id_token": "666f6f"}]}`),
+ 		},
+ 		CredentialsTypeSAML: {
+ 			Type:        CredentialsTypeSAML,
+@@ -589,26 +589,38 @@ func TestMergeOIDCCredentials(t *testing.T) {
+     "provider" : "dont-touch",
+     "initial_id_token" : "",
+     "initial_access_token" : "",
+-    "initial_refresh_token" : ""
++    "initial_refresh_token" : "",
++    "last_id_token" : "",
++    "last_access_token" : "",
++    "last_refresh_token" : ""
+   }, {
+     "subject" : "bar",
+     "provider" : "also-dont-touch",
+     "initial_id_token" : "",
+     "initial_access_token" : "",
+     "initial_refresh_token" : "",
++    "last_id_token" : "",
++    "last_access_token" : "",
++    "last_refresh_token" : "",
+     "use_auto_link": true
+   }, {
+     "subject" : "dont-replace",
+     "provider" : "replace",
+     "initial_id_token" : "",
+     "initial_access_token" : "",
+-    "initial_refresh_token" : ""
++    "initial_refresh_token" : "",
++    "last_id_token" : "",
++    "last_access_token" : "",
++    "last_refresh_token" : ""
+   }, {
+     "subject" : "new-subject",
+     "provider" : "replace",
+     "initial_id_token" : "",
+     "initial_access_token" : "",
+-    "initial_refresh_token" : ""
++    "initial_refresh_token" : "",
++    "last_id_token" : "",
++    "last_access_token" : "",
++    "last_refresh_token" : ""
+   } ]
+ }`),
+ 					},
+diff --git a/selfservice/strategy/oidc/provider_config.go b/selfservice/strategy/oidc/provider_config.go
+index 8b91cbfef..eec272a44 100644
+--- a/selfservice/strategy/oidc/provider_config.go
++++ b/selfservice/strategy/oidc/provider_config.go
+@@ -157,6 +157,11 @@ type Configuration struct {
+ 	// Possible values: "confirm_with_existing_credential" (default), "automatic".
+ 	// This is only effective in the Ory Network.
+ 	AccountLinkingMode string `json:"account_linking_mode,omitempty"`
++
++	// CaptureLastTokens controls whether to capture and store the last tokens received during login.
++	// When enabled, the LastIDToken, LastAccessToken, and LastRefreshToken fields will be updated
++	// on each successful login.
++	CaptureLastTokens bool `json:"capture_last_tokens"`
+ }
+ 
+ func (p Configuration) Redir(public *url.URL) string {
+diff --git a/selfservice/strategy/oidc/strategy.go b/selfservice/strategy/oidc/strategy.go
+index 1047cd29e..193c6040a 100644
+--- a/selfservice/strategy/oidc/strategy.go
++++ b/selfservice/strategy/oidc/strategy.go
+@@ -910,6 +910,9 @@ func (s *Strategy) linkCredentials(ctx context.Context, i *identity.Identity, to
+ 			InitialAccessToken:  tokens.GetAccessToken(),
+ 			InitialRefreshToken: tokens.GetRefreshToken(),
+ 			InitialIDToken:      tokens.GetIDToken(),
++			LastAccessToken:     tokens.GetAccessToken(),
++			LastRefreshToken:    tokens.GetRefreshToken(),
++			LastIDToken:         tokens.GetIDToken(),
+ 			Organization:        organization,
+ 		})
+ 
+diff --git a/selfservice/strategy/oidc/strategy_login.go b/selfservice/strategy/oidc/strategy_login.go
+index c594ac96d..51f0db41f 100644
+--- a/selfservice/strategy/oidc/strategy_login.go
++++ b/selfservice/strategy/oidc/strategy_login.go
+@@ -158,15 +158,22 @@ func (s *Strategy) handleConflictingIdentity(ctx context.Context, loginFlow *log
+ 	return verdict, existingIdentity, creds, nil
+ }
+ 
+-func (s *Strategy) ProcessLogin(ctx context.Context, w http.ResponseWriter, r *http.Request, loginFlow *login.Flow, token *identity.CredentialsOIDCEncryptedTokens, claims *Claims, provider Provider, container *AuthCodeContainer) (_ *registration.Flow, err error) {
++func (s *Strategy) ProcessLogin(
++	ctx context.Context, w http.ResponseWriter, r *http.Request, loginFlow *login.Flow,
++	token *identity.CredentialsOIDCEncryptedTokens, claims *Claims, provider Provider, container *AuthCodeContainer,
++) (_ *registration.Flow, err error) {
+ 	ctx, span := s.d.Tracer(ctx).Tracer().Start(ctx, "selfservice.strategy.oidc.Strategy.processLogin")
+ 	defer otelx.End(span, &err)
+ 
+-	i, c, err := s.d.PrivilegedIdentityPool().FindByCredentialsIdentifier(ctx, s.ID(), identity.OIDCUniqueID(provider.Config().ID, claims.Subject))
++	merge := false
++	i, c, err := s.d.PrivilegedIdentityPool().FindByCredentialsIdentifier(
++		ctx, s.ID(), identity.OIDCUniqueID(provider.Config().ID, claims.Subject),
++	)
+ 	if err != nil {
+ 		if errors.Is(err, sqlcon.ErrNoRows) {
+ 			var verdict ConflictingIdentityVerdict
+ 			verdict, i, c, err = s.handleConflictingIdentity(ctx, loginFlow, token, claims, provider, container)
++			merge = true
+ 			switch verdict {
+ 			case ConflictingIdentityVerdictMerge:
+ 				// Do nothing
+@@ -217,7 +224,9 @@ func (s *Strategy) ProcessLogin(ctx context.Context, w http.ResponseWriter, r *h
+ 				// We are converting the flow here, but want to retain the original request URL.
+ 				registrationFlow.RequestURL = loginFlow.RequestURL
+ 
+-				if _, err := s.processRegistration(ctx, w, r, registrationFlow, token, claims, provider, container); err != nil {
++				if _, err := s.processRegistration(
++					ctx, w, r, registrationFlow, token, claims, provider, container,
++				); err != nil {
+ 					return registrationFlow, err
+ 				}
+ 
+@@ -243,21 +252,56 @@ func (s *Strategy) ProcessLogin(ctx context.Context, w http.ResponseWriter, r *h
+ 	}
+ 
+ 	sess := session.NewInactiveSession()
+-	sess.CompletedLoginForWithProvider(s.ID(), identity.AuthenticatorAssuranceLevel1, provider.Config().ID, provider.Config().OrganizationID)
+-
+-	for _, c := range oidcCredentials.Providers {
+-		if c.Subject == claims.Subject && c.Provider == provider.Config().ID {
+-			if err = s.d.LoginHookExecutor().PostLoginHook(w, r, node.OpenIDConnectGroup, loginFlow, i, sess, provider.Config().ID); err != nil {
+-				return nil, x.WrapWithIdentityIDError(s.HandleError(ctx, w, r, loginFlow, provider.Config().ID, nil, err), i.ID)
+-			}
+-			return nil, nil
++	sess.CompletedLoginForWithProvider(
++		s.ID(), identity.AuthenticatorAssuranceLevel1, provider.Config().ID, provider.Config().OrganizationID,
++	)
++
++	pos, found := oidcCredentials.GetProvider(provider.Config().ID, claims.Subject)
++	if !found {
++		return nil, s.HandleError(
++			ctx, w, r, loginFlow, provider.Config().ID, nil, errors.WithStack(
++				herodot.ErrInternalServerError.WithReason("Unable to find matching OpenID Connect Credentials.").WithDebugf(
++					`Unable to find credentials that match the given provider "%s" and subject "%s".`,
++					provider.Config().ID, claims.Subject,
++				),
++			),
++		)
++	}
++
++	if !merge && provider.Config().CaptureLastTokens {
++		i, _, err = s.handleCapturingTokens(ctx, token, oidcCredentials, pos, c, i)
++		if err != nil {
++			return nil, s.HandleError(ctx, w, r, loginFlow, provider.Config().ID, nil, err)
+ 		}
+ 	}
+ 
+-	return nil, s.HandleError(ctx, w, r, loginFlow, provider.Config().ID, nil, x.WrapWithIdentityIDError(errors.WithStack(herodot.ErrInternalServerError.WithReason("Unable to find matching OpenID Connect credentials.").WithDebugf(`Unable to find credentials that match the given provider "%s" and subject "%s".`, provider.Config().ID, claims.Subject)), i.ID))
++	if err = s.d.LoginHookExecutor().PostLoginHook(
++		w, r, node.OpenIDConnectGroup, loginFlow, i, sess, provider.Config().ID,
++	); err != nil {
++		return nil, x.WrapWithIdentityIDError(s.HandleError(ctx, w, r, loginFlow, provider.Config().ID, nil, err), i.ID)
++	}
++
++	return nil, nil
++}
++
++func (s *Strategy) handleCapturingTokens(ctx context.Context, token *identity.CredentialsOIDCEncryptedTokens, oidcCredentials identity.CredentialsOIDC, index int, c *identity.Credentials, i *identity.Identity) (id *identity.Identity, credentials *identity.Credentials, err error) {
++	oidcCredentials.Providers[index].LastIDToken = token.GetIDToken()
++	oidcCredentials.Providers[index].LastAccessToken = token.GetAccessToken()
++	oidcCredentials.Providers[index].LastRefreshToken = token.GetRefreshToken()
++	c.Config, err = json.Marshal(oidcCredentials)
++	if err != nil {
++		return nil, nil, err
++	}
++	i.SetCredentials(identity.CredentialsTypeOIDC, *c)
++	if err = s.d.PrivilegedIdentityPool().UpdateIdentity(ctx, i); err != nil {
++		return nil, nil, err
++	}
++	return i, c, nil
+ }
+ 
+-func (s *Strategy) Login(w http.ResponseWriter, r *http.Request, f *login.Flow, _ *session.Session) (i *identity.Identity, err error) {
++func (s *Strategy) Login(
++	w http.ResponseWriter, r *http.Request, f *login.Flow, _ *session.Session,
++) (i *identity.Identity, err error) {
+ 	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.oidc.Strategy.Login")
+ 	defer otelx.End(span, &err)
+ 
+@@ -442,8 +486,12 @@ func (s *Strategy) removeProviders(conf *ConfigurationCollection, f *login.Flow)
+ 	}
+ }
+ 
+-func (s *Strategy) PopulateLoginMethodIdentifierFirstCredentials(r *http.Request, f *login.Flow, mods ...login.FormHydratorModifier) (err error) {
+-	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.oidc.Strategy.PopulateLoginMethodIdentifierFirstCredentials")
++func (s *Strategy) PopulateLoginMethodIdentifierFirstCredentials(
++	r *http.Request, f *login.Flow, mods ...login.FormHydratorModifier,
++) (err error) {
++	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(
++		r.Context(), "selfservice.strategy.oidc.Strategy.PopulateLoginMethodIdentifierFirstCredentials",
++	)
+ 	defer otelx.End(span, &err)
+ 
+ 	conf, err := s.Config(ctx)
+diff --git a/selfservice/strategy/oidc/strategy_settings_test.go b/selfservice/strategy/oidc/strategy_settings_test.go
+index d4de60131..8d1358d64 100644
+--- a/selfservice/strategy/oidc/strategy_settings_test.go
++++ b/selfservice/strategy/oidc/strategy_settings_test.go
+@@ -277,6 +277,9 @@ func TestSettingsStrategy(t *testing.T) {
+ 					assert.NotEmpty(t, p.InitialIDToken)
+ 					assert.NotEmpty(t, p.InitialAccessToken)
+ 					assert.NotEmpty(t, p.InitialRefreshToken)
++					assert.NotEmpty(t, p.LastIDToken)
++					assert.NotEmpty(t, p.LastAccessToken)
++					assert.NotEmpty(t, p.LastRefreshToken)
+ 				}
+ 				break
+ 			}
+diff --git a/selfservice/strategy/oidc/strategy_test.go b/selfservice/strategy/oidc/strategy_test.go
+index 8e32ca684..c71d06aea 100644
+--- a/selfservice/strategy/oidc/strategy_test.go
++++ b/selfservice/strategy/oidc/strategy_test.go
+@@ -91,7 +91,9 @@ func TestStrategy(t *testing.T) {
+ 		t,
+ 		conf,
+ 		newOIDCProvider(t, ts, remotePublic, remoteAdmin, "valid"),
+-		newOIDCProvider(t, ts, remotePublic, remoteAdmin, "valid2"),
++		newOIDCProvider(t, ts, remotePublic, remoteAdmin, "valid2", func(c *oidc.Configuration) {
++			c.CaptureLastTokens = true
++		}),
+ 		newOIDCProvider(t, ts, remotePublic, remoteAdmin, "secondProvider"),
+ 		newOIDCProvider(t, ts, remotePublic, remoteAdmin, "claimsViaUserInfo", func(c *oidc.Configuration) {
+ 			c.ClaimsSource = oidc.ClaimsSourceUserInfo
+@@ -437,7 +439,10 @@ func TestStrategy(t *testing.T) {
+ 				t,
+ 				json.RawMessage(fmt.Sprintf(`{"providers": [{"subject":"%s","provider":"%s"}]}`, subject, provider)),
+ 				json.RawMessage(c),
+-				[]string{"providers.0.initial_id_token", "providers.0.initial_access_token", "providers.0.initial_refresh_token"},
++				[]string{
++					"providers.0.initial_id_token", "providers.0.initial_access_token", "providers.0.initial_refresh_token",
++					"providers.0.last_id_token", "providers.0.last_access_token", "providers.0.last_refresh_token",
++				},
+ 			)
+ 		}
+ 
+@@ -483,7 +488,10 @@ func TestStrategy(t *testing.T) {
+ 			t,
+ 			json.RawMessage(fmt.Sprintf(`{"providers": [{"subject":"%s","provider":"%s"}]}`, subject, provider)),
+ 			json.RawMessage(c),
+-			[]string{"providers.0.initial_id_token", "providers.0.initial_access_token", "providers.0.initial_refresh_token"},
++			[]string{
++				"providers.0.initial_id_token", "providers.0.initial_access_token", "providers.0.initial_refresh_token",
++				"providers.0.last_id_token", "providers.0.last_access_token", "providers.0.last_refresh_token",
++			},
+ 		)
+ 		return id
+ 	}
+@@ -789,6 +797,53 @@ func TestStrategy(t *testing.T) {
+ 		})
+ 	})
+ 
++	t.Run("case=capture last tokens", func(t *testing.T) {
++		accessTokens := func(t *testing.T, id uuid.UUID) (initial, last string) {
++			i, err := reg.PrivilegedIdentityPool().GetIdentityConfidential(context.Background(), id)
++			require.NoError(t, err)
++			c := i.Credentials[identity.CredentialsTypeOIDC].Config
++			return gjson.GetBytes(c, "providers.0.initial_access_token").String(), gjson.GetBytes(c, "providers.0.last_access_token").String()
++		}
++
++		// registerThenLogin registers a new identity with the given provider and logs in once more.
++		// It returns the (initial, last) access tokens after registration and after login.
++		registerThenLogin := func(t *testing.T, provider string) (afterRegistration, afterLogin [2]string) {
++			r := newBrowserRegistrationFlow(t, returnTS.URL, time.Minute)
++			action := assertFormValues(t, r.ID, provider)
++			res, body := makeRequest(t, provider, action, url.Values{})
++			assertIdentity(t, res, body)
++			id := expectTokens(t, provider, body)
++			afterRegistration[0], afterRegistration[1] = accessTokens(t, id)
++
++			l := newBrowserLoginFlow(t, returnTS.URL, time.Minute)
++			action = assertFormValues(t, l.ID, provider)
++			res, body = makeRequest(t, provider, action, url.Values{})
++			assertIdentity(t, res, body)
++			require.Equal(t, id, expectTokens(t, provider, body))
++			afterLogin[0], afterLogin[1] = accessTokens(t, id)
++			return
++		}
++
++		scope = []string{"openid", "offline"}
++
++		t.Run("case=login replaces last tokens when capture_last_tokens is enabled", func(t *testing.T) {
++			subject = "capture-last-tokens-enabled@ory.sh"
++			afterRegistration, afterLogin := registerThenLogin(t, "valid2")
++			require.NotEmpty(t, afterRegistration[0])
++			assert.Equal(t, afterRegistration[0], afterRegistration[1], "right after registration the last tokens equal the initial tokens")
++			assert.Equal(t, afterRegistration[0], afterLogin[0], "initial tokens must never be overwritten")
++			assert.NotEqual(t, afterRegistration[1], afterLogin[1], "last tokens must be replaced on login")
++		})
++
++		t.Run("case=login keeps last tokens when capture_last_tokens is disabled", func(t *testing.T) {
++			subject = "capture-last-tokens-disabled@ory.sh"
++			afterRegistration, afterLogin := registerThenLogin(t, "valid")
++			require.NotEmpty(t, afterRegistration[0])
++			assert.Equal(t, afterRegistration[0], afterRegistration[1])
++			assert.Equal(t, afterRegistration, afterLogin, "credentials must not be touched on login")
++		})
++	})
++
+ 	t.Run("case=login without registered account", func(t *testing.T) {
+ 		postRegistrationWebhook := hooktest.NewServer()
+ 		t.Cleanup(postRegistrationWebhook.Close)
+diff --git a/test/e2e/cypress/integration/profiles/oidc-provider/update.spec.ts b/test/e2e/cypress/integration/profiles/oidc-provider/update.spec.ts
+new file mode 100644
+index 000000000..2078162c5
+--- /dev/null
++++ b/test/e2e/cypress/integration/profiles/oidc-provider/update.spec.ts
+@@ -0,0 +1,164 @@
++// Copyright © 2024 Ory Corp
++// SPDX-License-Identifier: Apache-2.0
++
++import { appPrefix, gen, website } from "../../../helpers"
++import { routes as express } from "../../../helpers/express"
++import { routes as react } from "../../../helpers/react"
++
++context("OpenID Provider Update", () => {
++  ;[
++    {
++      login: react.login,
++      registration: react.registration,
++      app: "react" as "react",
++      profile: "spa",
++    },
++    {
++      login: express.login,
++      registration: express.registration,
++      app: "express" as "express",
++      profile: "oidc",
++    },
++  ].forEach(({ login, registration, profile, app }) => {
++    describe(`for app ${app}`, () => {
++      before(() => {
++        cy.useConfigProfile(profile)
++        cy.proxy(app)
++      })
++      beforeEach(() => {
++        cy.clearAllCookies()
++        cy.visit(registration)
++        cy.setIdentitySchema(
++          "file://test/e2e/profiles/oidc/identity.traits.schema.json",
++        )
++      })
++
++      const shouldSession = (email) => (session) => {
++        const { identity } = session
++        expect(identity.id).to.not.be.empty
++        expect(identity.traits.website).to.equal(website)
++        expect(identity.traits.email).to.equal(email)
++      }
++
++      it("should be able to sign up, sign out, sign in and then check token", () => {
++        const email = gen.email()
++
++        // sign up
++        cy.registerOidc({
++          app,
++          email,
++          expectSession: false,
++          route: registration,
++        })
++
++        cy.get("#registration-password").should("not.exist")
++        cy.get(appPrefix(app) + '[name="traits.email"]').should(
++          "have.value",
++          email,
++        )
++        cy.get('[data-testid="ui/message/4000002"]').should(
++          "contain.text",
++          "Property website is missing",
++        )
++
++        cy.get('[name="traits.consent"][type="checkbox"]')
++          .siblings("label")
++          .click()
++        cy.get('[name="traits.newsletter"][type="checkbox"]')
++          .siblings("label")
++          .click()
++        cy.get('[name="traits.website"]').type("http://s")
++
++        cy.get('[name="provider"]')
++          .should("have.length", 1)
++          .should("have.value", "hydra")
++          .should("contain.text", "Continue")
++          .click()
++
++        cy.get("#registration-password").should("not.exist")
++        cy.get('[name="traits.email"]').should("have.value", email)
++        cy.get('[name="traits.website"]').should("have.value", "http://s")
++        cy.get('[data-testid="ui/message/4000003"]').should(
++          "contain.text",
++          "length must be >= 10",
++        )
++        cy.get('[name="traits.website"]')
++          .should("have.value", "http://s")
++          .clear()
++          .type(website)
++
++        cy.get('[name="traits.consent"]').should("be.checked")
++        cy.get('[name="traits.newsletter"]').should("be.checked")
++
++        cy.triggerOidc(app)
++
++        cy.location("pathname").should((loc) => {
++          expect(loc).to.be.oneOf(["/welcome", "/", "/sessions"])
++        })
++
++        // sign out
++
++        cy.logout()
++        cy.noSession()
++
++        // sign in
++        cy.loginOidc({ app })
++
++        cy.location("pathname").should((loc) => {
++          expect(loc).to.be.oneOf(["/welcome", "/", "/sessions"])
++        })
++        cy.getSession().then((session) => {
++          shouldSession(email)(session)
++          cy.getFullIdentityById({ id: session.identity.id }).then(
++            (identity) => {
++              expect(
++                identity.credentials.oidc.config.providers[0]
++                  .initial_access_token,
++              ).to.not.be.empty
++              expect(
++                identity.credentials.oidc.config.providers[0].initial_id_token,
++              ).to.not.be.empty
++              expect(
++                identity.credentials.oidc.config.providers[0]
++                  .initial_refresh_token,
++              ).to.not.be.empty
++              expect(
++                identity.credentials.oidc.config.providers[0].last_access_token,
++              ).to.not.be.empty
++              expect(
++                identity.credentials.oidc.config.providers[0].last_id_token,
++              ).to.not.be.empty
++              expect(
++                identity.credentials.oidc.config.providers[0]
++                  .last_refresh_token,
++              ).to.not.be.empty
++
++              expect(
++                identity.credentials.oidc.config.providers[0]
++                  .initial_access_token,
++              ).to.not.eq(
++                identity.credentials.oidc.config.providers[0].last_access_token,
++              )
++              expect(
++                identity.credentials.oidc.config.providers[0].initial_id_token,
++              ).to.not.eq(
++                identity.credentials.oidc.config.providers[0].last_id_token,
++              )
++              expect(
++                identity.credentials.oidc.config.providers[0]
++                  .initial_refresh_token,
++              ).to.not.eq(
++                identity.credentials.oidc.config.providers[0]
++                  .last_refresh_token,
++              )
++
++              expect(
++                identity.credentials.oidc.config.providers[0].provider,
++              ).to.eq("hydra")
++            },
++          )
++        })
++      })
++    })
++  })
++})
+diff --git a/test/e2e/cypress/support/commands.ts b/test/e2e/cypress/support/commands.ts
+index 9c186cb70..13c3b7a87 100644
+--- a/test/e2e/cypress/support/commands.ts
++++ b/test/e2e/cypress/support/commands.ts
+@@ -1126,6 +1126,32 @@ Cypress.Commands.add("noSession", () =>
+     }),
+ )
+ 
++Cypress.Commands.add("getIdentityByEmail", ({ email }) =>
++  cy
++    .request({
++      method: "GET",
++      url: `${KRATOS_ADMIN}/admin/identities`,
++      failOnStatusCode: false,
++    })
++    .then((response) => {
++      expect(response.status).to.eq(200)
++      return response.body.find((identity) => identity.traits.email === email)
++    }),
++)
++
++Cypress.Commands.add("getFullIdentityById", ({ id }) =>
++  cy
++    .request({
++      method: "GET",
++      url: `${KRATOS_ADMIN}/admin/identities/${id}?include_credential=oidc`,
++      failOnStatusCode: false,
++    })
++    .then((response) => {
++      expect(response.status).to.eq(200)
++      return response.body
++    }),
++)
++
+ Cypress.Commands.add(
+   "performEmailVerification",
+   ({ expect: { email, redirectTo }, strategy = "code" }) => {
+diff --git a/test/e2e/cypress/support/index.d.ts b/test/e2e/cypress/support/index.d.ts
+index 446865884..04dc68a66 100644
+--- a/test/e2e/cypress/support/index.d.ts
++++ b/test/e2e/cypress/support/index.d.ts
+@@ -685,6 +685,18 @@ declare global {
+        */
+       setDefaultIdentitySchema(id: string): Chainable<void>
+ 
++      /**
++       * Get identity from email
++       * @param email
++       */
++      getIdentityByEmail(email: string): Chainable<void>
++
++      /**
++       * Get identity with credential from id
++       * @param id
++       */
++      getFullIdentityById(id: string): Chainable<void>
++
+       /**
+        * Remove the specified attribute from the given HTML elements
+        */
+diff --git a/test/e2e/profiles/oidc-provider/.kratos.yml b/test/e2e/profiles/oidc-provider/.kratos.yml
+index 09b2c9978..184c99d95 100644
+--- a/test/e2e/profiles/oidc-provider/.kratos.yml
++++ b/test/e2e/profiles/oidc-provider/.kratos.yml
+@@ -15,6 +15,7 @@ selfservice:
+         providers:
+           - id: google
+             provider: generic
++            capture_last_tokens: true
+             client_id: ${OIDC_GOOGLE_CLIENT_ID}
+             client_secret: ${OIDC_GOOGLE_CLIENT_SECRET}
+             issuer_url: http://localhost:4444/

@@ -1,0 +1,92 @@
+name: Build Kratos
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/kratos.yaml"
+      - "kratos/**"
+  pull_request:
+    paths:
+      - ".github/workflows/kratos.yaml"
+      - "kratos/**"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  docker:
+    name: Build Kratos image
+    runs-on: ubuntu-latest
+    env:
+      # renovate: datasource=github-releases depName=ory/kratos
+      KRATOS_VERSION: v26.2.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream Ory Kratos at the release tag
+        uses: actions/checkout@v4
+        with:
+          repository: ory/kratos
+          ref: ${{ env.KRATOS_VERSION }}
+          path: kratos-upstream
+
+      - name: Apply UniNow patch
+        # Strict apply on purpose: if the patch no longer fits the release, this job must
+        # fail so the patch gets rebased (see kratos/README.md).
+        run: |
+          cd kratos-upstream
+          if ! git apply --check ../kratos/uninow.patch; then
+            echo "::error::kratos/uninow.patch does not apply to ory/kratos ${KRATOS_VERSION}. Rebase the patch, see kratos/README.md."
+            exit 1
+          fi
+          git apply ../kratos/uninow.patch
+          git diff --stat | tail -1
+
+      - name: Build metadata
+        id: build
+        run: |
+          echo "sha7=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/uninow/kratos
+          tags: |
+            ${{ env.KRATOS_VERSION }}
+            ${{ env.KRATOS_VERSION }}-${{ steps.build.outputs.sha7 }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: kratos-upstream
+          file: kratos-upstream/.docker/Dockerfile-build
+          push: ${{ github.event_name == 'push' }}
+          # Pull requests only validate the patch and the build; the arm64 build under QEMU is slow.
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
+          build-args: |
+            VERSION=${{ env.KRATOS_VERSION }}-${{ steps.build.outputs.sha7 }}
+            COMMIT=${{ github.sha }}
+            BUILD_DATE=${{ steps.build.outputs.date }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
