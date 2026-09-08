@@ -17,17 +17,31 @@ index 2d2740d8e..7b06df990 100644
        },
        "additionalProperties": false,
 diff --git a/README.md b/README.md
-index 837e3c6f4..5a6038efc 100644
+index 837e3c6f4..d7e817d4d 100644
 --- a/README.md
 +++ b/README.md
-@@ -1,3 +1,18 @@
+@@ -1,3 +1,32 @@
 +# UniNow Build
 +
-+This fork carries UniNow-specific patches on top of an upstream Ory Kratos release tag.
-+Build and push the multi-arch image (bump the suffix for every rebuild of the same upstream version):
++The production image `ghcr.io/uninow/kratos` is **not** built from this branch directly. It is built by
++[UniNow/custom-images](https://github.com/UniNow/custom-images) (`kratos/`, workflow `.github/workflows/kratos.yaml`):
++the workflow checks out upstream `ory/kratos` at the release tag, applies `kratos/uninow.patch` and builds with
++`.docker/Dockerfile-build`. Renovate bumps the Kratos version there whenever Ory publishes a release, and the
++pull request build fails if the patch no longer applies.
++
++This branch is where the patch is maintained: a few commits on top of the upstream release tag. After changing
++it, regenerate the patch and open a pull request in custom-images:
 +
 +```
-+VERSION=v26.2.0-1
++git diff v26.2.0 uninow-v26.2.0 > /path/to/custom-images/kratos/uninow.patch
++```
++
++The rebase procedure for a new Kratos release is documented in custom-images `kratos/README.md`.
++
++Manual fallback build, same result as the workflow (bump the suffix for every rebuild of the same upstream version):
++
++```
++VERSION=v26.2.0-manual1
 +docker buildx build --platform linux/arm64,linux/amd64 --push \
 +  -f .docker/Dockerfile-build \
 +  --build-arg VERSION=$VERSION \
@@ -84,10 +98,10 @@ index 650edf332..f540eb664 100644
  	ViperKeyOIDCBaseRedirectURL                              = "selfservice.methods.oidc.config.base_redirect_uri"
  	ViperKeySAMLBaseRedirectURL                              = "selfservice.methods.saml.config.base_redirect_uri"
 diff --git a/embedx/config.schema.json b/embedx/config.schema.json
-index 4cddaca67..8811e01a6 100644
+index 4cddaca67..f63e2ea8e 100644
 --- a/embedx/config.schema.json
 +++ b/embedx/config.schema.json
-@@ -602,6 +602,13 @@
+@@ -602,6 +602,20 @@
            "type": "string",
            "enum": ["confirm_with_existing_credential", "automatic"],
            "default": "confirm_with_existing_credential"
@@ -98,6 +112,13 @@ index 4cddaca67..8811e01a6 100644
 +          "type": "boolean",
 +          "default": false,
 +          "examples": [true, false]
++        },
++        "update_identity_on_login": {
++          "title": "Update identity on login",
++          "description": "Controls whether the identity is updated from OIDC claims on each login. `never` (default) does not update the identity. `automatic` re-runs the Jsonnet claims mapper on every OIDC login and updates the identity's traits and metadata if they changed.",
++          "type": "string",
++          "enum": ["never", "automatic"],
++          "default": "never"
          }
        },
        "additionalProperties": false,
@@ -708,11 +729,192 @@ index cccdf5bc1..e4311438e 100644
    } ]
  }`),
  					},
+diff --git a/selfservice/strategy/oidc/form.go b/selfservice/strategy/oidc/form.go
+index ff3f8cab4..1243b2d22 100644
+--- a/selfservice/strategy/oidc/form.go
++++ b/selfservice/strategy/oidc/form.go
+@@ -4,7 +4,6 @@
+ package oidc
+ 
+ import (
+-	"bytes"
+ 	"encoding/json"
+ 
+ 	"dario.cat/mergo"
+@@ -12,32 +11,31 @@ import (
+ 	"github.com/ory/kratos/identity"
+ )
+ 
+-// merge merges the userFormValues (extracted from the initial POST request) prefixed with `traits` (encoded) with the
+-// values coming from the OpenID Provider (openIDProviderValues).
+-func merge(containerTraits json.RawMessage, openIDProviderValues json.RawMessage) (identity.Traits, error) {
+-	if len(containerTraits) == 0 || string(containerTraits) == "{}" {
+-		return identity.Traits(openIDProviderValues), nil
++// merge merges the JSON messages in a and b. If a value is defined in both a and b, a wins.
++func merge(a, b json.RawMessage) (identity.Traits, error) {
++	if len(a) == 0 || string(a) == "{}" {
++		return identity.Traits(b), nil
+ 	}
+ 
+-	var pt map[string]interface{}
+-	if err := json.NewDecoder(bytes.NewBuffer(openIDProviderValues)).Decode(&pt); err != nil {
++	var aMap, bMap map[string]any
++
++	if err := json.Unmarshal(a, &aMap); err != nil {
+ 		return nil, err
+ 	}
+ 
+-	var ct map[string]interface{}
+-	if err := json.NewDecoder(bytes.NewBuffer(containerTraits)).Decode(&ct); err != nil {
++	if err := json.Unmarshal(b, &bMap); err != nil {
+ 		return nil, err
+ 	}
+ 
+-	// decoderForm (coming from POST request) overrides decodedTraits (coming from OP)
+-	if err := mergo.Merge(&pt, &ct, mergo.WithOverride); err != nil {
++	// values in aMap (src) win.
++	if err := mergo.Merge(&bMap, &aMap, mergo.WithOverride); err != nil {
+ 		return nil, err
+ 	}
+ 
+-	var result bytes.Buffer
+-	if err := json.NewEncoder(&result).Encode(pt); err != nil {
++	traits, err := json.Marshal(bMap)
++	if err != nil {
+ 		return nil, err
+ 	}
+ 
+-	return result.Bytes(), nil
++	return traits, nil
+ }
+diff --git a/selfservice/strategy/oidc/json_equal_test.go b/selfservice/strategy/oidc/json_equal_test.go
+new file mode 100644
+index 000000000..24098fefa
+--- /dev/null
++++ b/selfservice/strategy/oidc/json_equal_test.go
+@@ -0,0 +1,104 @@
++// Copyright © 2023 Ory Corp
++// SPDX-License-Identifier: Apache-2.0
++
++package oidc
++
++import (
++	"encoding/json"
++	"testing"
++
++	"github.com/stretchr/testify/assert"
++)
++
++func TestJsonEqual(t *testing.T) {
++	t.Parallel()
++	for _, tc := range []struct {
++		name     string
++		a, b     json.RawMessage
++		expected bool
++	}{
++		{
++			name:     "both nil",
++			a:        nil,
++			b:        nil,
++			expected: true,
++		},
++		{
++			name:     "both empty",
++			a:        json.RawMessage{},
++			b:        json.RawMessage{},
++			expected: true,
++		},
++		{
++			name:     "one nil one empty",
++			a:        nil,
++			b:        json.RawMessage{},
++			expected: true,
++		},
++		{
++			name:     "one nil one non-empty",
++			a:        nil,
++			b:        json.RawMessage(`{}`),
++			expected: false,
++		},
++		{
++			name:     "identical objects",
++			a:        json.RawMessage(`{"name":"alice","age":30}`),
++			b:        json.RawMessage(`{"name":"alice","age":30}`),
++			expected: true,
++		},
++		{
++			name:     "same content different key order",
++			a:        json.RawMessage(`{"name":"alice","age":30}`),
++			b:        json.RawMessage(`{"age":30,"name":"alice"}`),
++			expected: true,
++		},
++		{
++			name:     "same content different whitespace",
++			a:        json.RawMessage(`{"name": "alice"}`),
++			b:        json.RawMessage(`{"name":"alice"}`),
++			expected: true,
++		},
++		{
++			name:     "different values",
++			a:        json.RawMessage(`{"name":"alice"}`),
++			b:        json.RawMessage(`{"name":"bob"}`),
++			expected: false,
++		},
++		{
++			name:     "nested objects equal",
++			a:        json.RawMessage(`{"user":{"name":"alice","groups":["admin","user"]}}`),
++			b:        json.RawMessage(`{"user":{"groups":["admin","user"],"name":"alice"}}`),
++			expected: true,
++		},
++		{
++			name:     "nested objects different",
++			a:        json.RawMessage(`{"user":{"groups":["admin"]}}`),
++			b:        json.RawMessage(`{"user":{"groups":["admin","user"]}}`),
++			expected: false,
++		},
++		{
++			name:     "extra key",
++			a:        json.RawMessage(`{"name":"alice"}`),
++			b:        json.RawMessage(`{"name":"alice","age":30}`),
++			expected: false,
++		},
++		{
++			name:     "invalid json a",
++			a:        json.RawMessage(`{invalid`),
++			b:        json.RawMessage(`{"name":"alice"}`),
++			expected: false,
++		},
++		{
++			name:     "invalid json b",
++			a:        json.RawMessage(`{"name":"alice"}`),
++			b:        json.RawMessage(`{invalid`),
++			expected: false,
++		},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			t.Parallel()
++			assert.Equal(t, tc.expected, jsonEqual(tc.a, tc.b))
++		})
++	}
++}
 diff --git a/selfservice/strategy/oidc/provider_config.go b/selfservice/strategy/oidc/provider_config.go
-index 8b91cbfef..eec272a44 100644
+index 8b91cbfef..e88501ae2 100644
 --- a/selfservice/strategy/oidc/provider_config.go
 +++ b/selfservice/strategy/oidc/provider_config.go
-@@ -157,6 +157,11 @@ type Configuration struct {
+@@ -26,6 +26,12 @@ const (
+ 	ProviderTypeApple = "apple"
+ 	// ProviderTypeGoogle is the provider type for Sign in with Google.
+ 	ProviderTypeGoogle = "google"
++
++	// UpdateIdentityOnLoginNever disables identity updates on login (default).
++	UpdateIdentityOnLoginNever = "never"
++	// UpdateIdentityOnLoginAutomatic re-runs the Jsonnet claims mapper on every
++	// OIDC login and updates the identity's traits and metadata automatically.
++	UpdateIdentityOnLoginAutomatic = "automatic"
+ )
+ 
+ type Configuration struct {
+@@ -157,6 +163,20 @@ type Configuration struct {
  	// Possible values: "confirm_with_existing_credential" (default), "automatic".
  	// This is only effective in the Ory Network.
  	AccountLinkingMode string `json:"account_linking_mode,omitempty"`
@@ -721,6 +923,15 @@ index 8b91cbfef..eec272a44 100644
 +	// When enabled, the LastIDToken, LastAccessToken, and LastRefreshToken fields will be updated
 +	// on each successful login.
 +	CaptureLastTokens bool `json:"capture_last_tokens"`
++
++	// UpdateIdentityOnLogin controls whether the identity is updated from
++	// OIDC claims on each login.
++	//
++	// Possible values:
++	// - "never" (default): the identity is not updated on login.
++	// - "automatic": re-runs the Jsonnet claims mapper on every OIDC login
++	//   and updates the identity's traits and metadata automatically.
++	UpdateIdentityOnLogin string `json:"update_identity_on_login,omitempty"`
  }
  
  func (p Configuration) Redir(public *url.URL) string {
@@ -739,14 +950,185 @@ index 1047cd29e..193c6040a 100644
  		})
  
 diff --git a/selfservice/strategy/oidc/strategy_login.go b/selfservice/strategy/oidc/strategy_login.go
-index c594ac96d..51f0db41f 100644
+index c594ac96d..236927598 100644
 --- a/selfservice/strategy/oidc/strategy_login.go
 +++ b/selfservice/strategy/oidc/strategy_login.go
-@@ -158,15 +158,22 @@ func (s *Strategy) handleConflictingIdentity(ctx context.Context, loginFlow *log
+@@ -7,12 +7,15 @@ import (
+ 	"bytes"
+ 	"cmp"
+ 	"context"
++	"crypto/sha256"
+ 	"encoding/json"
+ 	"net/http"
++	"reflect"
+ 	"strings"
+ 	"time"
+ 
+ 	"github.com/pkg/errors"
++	"github.com/tidwall/gjson"
+ 	"github.com/tidwall/sjson"
+ 	"go.opentelemetry.io/otel/attribute"
+ 
+@@ -158,15 +161,177 @@ func (s *Strategy) handleConflictingIdentity(ctx context.Context, loginFlow *log
  	return verdict, existingIdentity, creds, nil
  }
  
 -func (s *Strategy) ProcessLogin(ctx context.Context, w http.ResponseWriter, r *http.Request, loginFlow *login.Flow, token *identity.CredentialsOIDCEncryptedTokens, claims *Claims, provider Provider, container *AuthCodeContainer) (_ *registration.Flow, err error) {
++func verifiableAddressHash(i *identity.Identity) [sha256.Size]byte {
++	h := sha256.New()
++	for _, a := range i.VerifiableAddresses {
++		h.Write([]byte(a.Signature())) // sha256 Write never returns an error
++	}
++	return [sha256.Size]byte(h.Sum(nil))
++}
++
++func recoveryAddressHash(i *identity.Identity) [sha256.Size]byte {
++	h := sha256.New()
++	for _, a := range i.RecoveryAddresses {
++		h.Write([]byte(a.Signature())) // sha256 Write never returns an error
++	}
++	return [sha256.Size]byte(h.Sum(nil))
++}
++
++// jsonEqual reports whether two JSON values are deeply equal, ignoring key
++// order and whitespace differences. Array element order is significant.
++func jsonEqual(a, b json.RawMessage) bool {
++	if len(a) == 0 && len(b) == 0 {
++		return true
++	}
++	if len(a) == 0 || len(b) == 0 {
++		return false
++	}
++	var aVal, bVal any
++	if err := json.Unmarshal(a, &aVal); err != nil {
++		return false
++	}
++	if err := json.Unmarshal(b, &bVal); err != nil {
++		return false
++	}
++	return reflect.DeepEqual(aVal, bVal)
++}
++
++// UpdateIdentityFromClaims re-runs the Jsonnet claims mapper and applies the
++// result to an existing identity. It returns true if traits or metadata changed.
++// Unlike registration, user-supplied form traits are not merged — only the
++// mapper output is applied.
++func (s *Strategy) UpdateIdentityFromClaims(ctx context.Context, claims *Claims, provider Provider, i *identity.Identity) (changed bool, err error) {
++	evaluated, _, err := s.EvaluateClaimsMapper(ctx, claims, provider, i)
++	if err != nil {
++		return false, err
++	}
++
++	// Save the current state for comparison.
++	oldTraits := json.RawMessage(i.Traits)
++	oldMetadataPublic := json.RawMessage(i.MetadataPublic)
++	oldMetadataAdmin := json.RawMessage(i.MetadataAdmin)
++	oldVerifiableHash := verifiableAddressHash(i)
++	oldRecoveryHash := recoveryAddressHash(i)
++
++	// Merge the mapper output with the existing identity traits. The mapper
++	// output takes precedence, but existing traits that the mapper does not
++	// output are preserved.
++	jsonTraits := gjson.Get(evaluated, "identity.traits")
++	if !jsonTraits.IsObject() {
++		return false, errors.WithStack(herodot.ErrInternalServerError.WithReasonf("OpenID Connect Jsonnet mapper did not return an object for key identity.traits. Please check your Jsonnet code!"))
++	}
++	// merge(override, base) merges base into override, with override winning.
++	// Pass mapper output as override so it takes precedence over existing traits,
++	// while traits not in the mapper output are preserved from the base.
++	mergedTraits, err := merge(json.RawMessage(jsonTraits.Raw), json.RawMessage(i.Traits))
++	if err != nil {
++		return false, err
++	}
++	i.Traits = mergedTraits
++
++	// Only update metadata if the mapper explicitly outputs the key. When the
++	// mapper omits metadata_public or metadata_admin (common for mappers
++	// written for registration only), we preserve the existing values rather
++	// than wiping them.
++	if gjson.Get(evaluated, string(PublicMetadata)).Exists() {
++		if err = s.setMetadata(evaluated, i, PublicMetadata); err != nil {
++			return false, err
++		}
++	}
++	if gjson.Get(evaluated, string(AdminMetadata)).Exists() {
++		if err = s.setMetadata(evaluated, i, AdminMetadata); err != nil {
++			return false, err
++		}
++	}
++
++	// Save existing addresses before Validate regenerates them from the schema.
++	oldVerifiableAddresses := make([]identity.VerifiableAddress, len(i.VerifiableAddresses))
++	copy(oldVerifiableAddresses, i.VerifiableAddresses)
++	oldRecoveryAddresses := make([]identity.RecoveryAddress, len(i.RecoveryAddresses))
++	copy(oldRecoveryAddresses, i.RecoveryAddresses)
++
++	// Validate the updated identity against the schema to prevent persisting
++	// invalid traits produced by a broken mapper.
++	if err = s.d.IdentityValidator().Validate(ctx, i); err != nil {
++		return false, err
++	}
++
++	// Restore existing verification and recovery state for addresses that
++	// survived validation. Validate regenerates both VerifiableAddresses and
++	// RecoveryAddresses from the schema, losing IDs, verified/verifiedAt
++	// status, etc. Carry over the state for matching addresses.
++	for n := range i.VerifiableAddresses {
++		addr := &i.VerifiableAddresses[n]
++		for _, old := range oldVerifiableAddresses {
++			if addr.Via == old.Via && addr.Value == old.Value {
++				*addr = old
++				break
++			}
++		}
++	}
++	for n := range i.RecoveryAddresses {
++		addr := &i.RecoveryAddresses[n]
++		for _, old := range oldRecoveryAddresses {
++			if addr.Via == old.Via && addr.Value == old.Value {
++				*addr = old
++				break
++			}
++		}
++	}
++
++	// Apply verified addresses from the mapper output, matching the
++	// registration behavior. This lets the mapper carry over the verified
++	// status from the SSO provider on every login (e.g., when the user's
++	// email changes upstream).
++	va, err := s.extractVerifiedAddresses(evaluated)
++	if err != nil {
++		return false, err
++	}
++	for n := range i.VerifiableAddresses {
++		verifiable := &i.VerifiableAddresses[n]
++		for _, verified := range va {
++			if verifiable.Via == verified.Via && verifiable.Value == verified.Value {
++				if !verifiable.Verified {
++					verifiable.Status = identity.VerifiableAddressStatusCompleted
++					verifiable.Verified = true
++					t := sqlxx.NullTime(time.Now().UTC().Round(time.Second))
++					verifiable.VerifiedAt = &t
++				}
++			}
++		}
++	}
++
++	changed = !jsonEqual(oldTraits, json.RawMessage(i.Traits)) ||
++		!jsonEqual(oldMetadataPublic, json.RawMessage(i.MetadataPublic)) ||
++		!jsonEqual(oldMetadataAdmin, json.RawMessage(i.MetadataAdmin)) ||
++		oldVerifiableHash != verifiableAddressHash(i) ||
++		oldRecoveryHash != recoveryAddressHash(i)
++
++	s.d.Logger().
++		WithField("oidc_provider", provider.Config().ID).
++		WithField("identity_id", i.ID).
++		WithField("identity_changed", changed).
++		Debug("Re-evaluated OpenID Connect claims mapper on login.")
++
++	return changed, nil
++}
++
 +func (s *Strategy) ProcessLogin(
 +	ctx context.Context, w http.ResponseWriter, r *http.Request, loginFlow *login.Flow,
 +	token *identity.CredentialsOIDCEncryptedTokens, claims *Claims, provider Provider, container *AuthCodeContainer,
@@ -767,7 +1149,7 @@ index c594ac96d..51f0db41f 100644
  			switch verdict {
  			case ConflictingIdentityVerdictMerge:
  				// Do nothing
-@@ -217,7 +224,9 @@ func (s *Strategy) ProcessLogin(ctx context.Context, w http.ResponseWriter, r *h
+@@ -217,7 +382,9 @@ func (s *Strategy) ProcessLogin(ctx context.Context, w http.ResponseWriter, r *h
  				// We are converting the flow here, but want to retain the original request URL.
  				registrationFlow.RequestURL = loginFlow.RequestURL
  
@@ -778,18 +1160,11 @@ index c594ac96d..51f0db41f 100644
  					return registrationFlow, err
  				}
  
-@@ -243,21 +252,56 @@ func (s *Strategy) ProcessLogin(ctx context.Context, w http.ResponseWriter, r *h
+@@ -243,21 +410,68 @@ func (s *Strategy) ProcessLogin(ctx context.Context, w http.ResponseWriter, r *h
  	}
  
  	sess := session.NewInactiveSession()
 -	sess.CompletedLoginForWithProvider(s.ID(), identity.AuthenticatorAssuranceLevel1, provider.Config().ID, provider.Config().OrganizationID)
--
--	for _, c := range oidcCredentials.Providers {
--		if c.Subject == claims.Subject && c.Provider == provider.Config().ID {
--			if err = s.d.LoginHookExecutor().PostLoginHook(w, r, node.OpenIDConnectGroup, loginFlow, i, sess, provider.Config().ID); err != nil {
--				return nil, x.WrapWithIdentityIDError(s.HandleError(ctx, w, r, loginFlow, provider.Config().ID, nil, err), i.ID)
--			}
--			return nil, nil
 +	sess.CompletedLoginForWithProvider(
 +		s.ID(), identity.AuthenticatorAssuranceLevel1, provider.Config().ID, provider.Config().OrganizationID,
 +	)
@@ -810,6 +1185,22 @@ index c594ac96d..51f0db41f 100644
 +		i, _, err = s.handleCapturingTokens(ctx, token, oidcCredentials, pos, c, i)
 +		if err != nil {
 +			return nil, s.HandleError(ctx, w, r, loginFlow, provider.Config().ID, nil, err)
++		}
++	}
+ 
+-	for _, c := range oidcCredentials.Providers {
+-		if c.Subject == claims.Subject && c.Provider == provider.Config().ID {
+-			if err = s.d.LoginHookExecutor().PostLoginHook(w, r, node.OpenIDConnectGroup, loginFlow, i, sess, provider.Config().ID); err != nil {
++	if provider.Config().UpdateIdentityOnLogin == UpdateIdentityOnLoginAutomatic {
++		identityChanged, err := s.UpdateIdentityFromClaims(ctx, claims, provider, i)
++		if err != nil {
++			return nil, x.WrapWithIdentityIDError(s.HandleError(ctx, w, r, loginFlow, provider.Config().ID, nil, err), i.ID)
++		}
++		if identityChanged {
++			if err := s.d.PrivilegedIdentityPool().UpdateIdentity(ctx, i); err != nil {
+ 				return nil, x.WrapWithIdentityIDError(s.HandleError(ctx, w, r, loginFlow, provider.Config().ID, nil, err), i.ID)
+ 			}
+-			return nil, nil
  		}
  	}
  
@@ -845,7 +1236,7 @@ index c594ac96d..51f0db41f 100644
  	ctx, span := s.d.Tracer(r.Context()).Tracer().Start(r.Context(), "selfservice.strategy.oidc.Strategy.Login")
  	defer otelx.End(span, &err)
  
-@@ -442,8 +486,12 @@ func (s *Strategy) removeProviders(conf *ConfigurationCollection, f *login.Flow)
+@@ -442,8 +656,12 @@ func (s *Strategy) removeProviders(conf *ConfigurationCollection, f *login.Flow)
  	}
  }
  
@@ -860,6 +1251,80 @@ index c594ac96d..51f0db41f 100644
  	defer otelx.End(span, &err)
  
  	conf, err := s.Config(ctx)
+diff --git a/selfservice/strategy/oidc/strategy_registration.go b/selfservice/strategy/oidc/strategy_registration.go
+index d0a927faa..2f2e27e81 100644
+--- a/selfservice/strategy/oidc/strategy_registration.go
++++ b/selfservice/strategy/oidc/strategy_registration.go
+@@ -384,17 +384,19 @@ func (s *Strategy) processRegistration(ctx context.Context, w http.ResponseWrite
+ 	return nil, nil
+ }
+ 
+-func (s *Strategy) newIdentityFromClaims(ctx context.Context, claims *Claims, provider Provider, container *AuthCodeContainer, schema flow.IdentitySchema) (_ *identity.Identity, _ []VerifiedAddress, err error) {
++// EvaluateClaimsMapper runs the Jsonnet mapper for the given claims and returns
++// the evaluated JSON string. If currentIdentity is non-nil, its traits and
++// metadata are made available in the Jsonnet context as std.extVar('identity').
++func (s *Strategy) EvaluateClaimsMapper(ctx context.Context, claims *Claims, provider Provider, currentIdentity *identity.Identity) (evaluated string, claimsJSON []byte, err error) {
+ 	fetch := fetcher.NewFetcher(fetcher.WithClient(s.d.HTTPClient(ctx)), fetcher.WithCache(jsonnetCache, 60*time.Minute))
+ 	jsonnetSnippet, err := fetch.FetchContext(ctx, provider.Config().Mapper)
+ 	if err != nil {
+-		return nil, nil, err
++		return "", nil, err
+ 	}
+ 
+ 	var jsonClaims bytes.Buffer
+-	var evaluated string
+ 	if err = json.NewEncoder(&jsonClaims).Encode(claims); err != nil {
+-		return nil, nil, err
++		return "", nil, err
+ 	}
+ 
+ 	defer func() {
+@@ -407,11 +409,44 @@ func (s *Strategy) newIdentityFromClaims(ctx context.Context, claims *Claims, pr
+ 
+ 	vm, err := s.d.JsonnetVM(ctx)
+ 	if err != nil {
+-		return nil, nil, err
++		return "", nil, err
+ 	}
+ 
+ 	vm.ExtCode("claims", jsonClaims.String())
++
++	if currentIdentity != nil {
++		// Coerce nil/empty fields to empty JSON objects so that Jsonnet
++		// mappers can safely access identity.traits, identity.metadata_public,
++		// and identity.metadata_admin without null-reference errors.
++		coalesce := func(b json.RawMessage) json.RawMessage {
++			if len(b) == 0 {
++				return json.RawMessage("{}")
++			}
++			return b
++		}
++		identityCtx, err := json.Marshal(map[string]json.RawMessage{
++			"traits":          coalesce(json.RawMessage(currentIdentity.Traits)),
++			"metadata_public": coalesce(json.RawMessage(currentIdentity.MetadataPublic)),
++			"metadata_admin":  coalesce(json.RawMessage(currentIdentity.MetadataAdmin)),
++		})
++		if err != nil {
++			return "", nil, err
++		}
++		vm.ExtCode("identity", string(identityCtx))
++	} else {
++		vm.ExtCode("identity", `{"traits": {}, "metadata_public": {}, "metadata_admin": {}}`)
++	}
++
+ 	evaluated, err = vm.EvaluateAnonymousSnippet(provider.Config().Mapper, jsonnetSnippet.String())
++	if err != nil {
++		return "", nil, err
++	}
++
++	return evaluated, jsonClaims.Bytes(), nil
++}
++
++func (s *Strategy) newIdentityFromClaims(ctx context.Context, claims *Claims, provider Provider, container *AuthCodeContainer, schema flow.IdentitySchema) (_ *identity.Identity, _ []VerifiedAddress, err error) {
++	evaluated, _, err := s.EvaluateClaimsMapper(ctx, claims, provider, nil)
+ 	if err != nil {
+ 		return nil, nil, err
+ 	}
 diff --git a/selfservice/strategy/oidc/strategy_settings_test.go b/selfservice/strategy/oidc/strategy_settings_test.go
 index d4de60131..8d1358d64 100644
 --- a/selfservice/strategy/oidc/strategy_settings_test.go
@@ -875,7 +1340,7 @@ index d4de60131..8d1358d64 100644
  				break
  			}
 diff --git a/selfservice/strategy/oidc/strategy_test.go b/selfservice/strategy/oidc/strategy_test.go
-index 8e32ca684..c71d06aea 100644
+index 8e32ca684..bcb2ce98e 100644
 --- a/selfservice/strategy/oidc/strategy_test.go
 +++ b/selfservice/strategy/oidc/strategy_test.go
 @@ -91,7 +91,9 @@ func TestStrategy(t *testing.T) {
@@ -967,6 +1432,935 @@ index 8e32ca684..c71d06aea 100644
  	t.Run("case=login without registered account", func(t *testing.T) {
  		postRegistrationWebhook := hooktest.NewServer()
  		t.Cleanup(postRegistrationWebhook.Close)
+@@ -1895,6 +1950,240 @@ func TestStrategy(t *testing.T) {
+ 		})
+ 	})
+ 
++	t.Run("case=update identity on login", func(t *testing.T) {
++		t.Run("case=should update traits when claims change", func(t *testing.T) {
++			subject = "update-traits-on-login@ory.sh"
++			scope = []string{"openid", "offline"}
++			claims = idTokenClaims{}
++			claims.traits.website = "https://original.example.com"
++			claims.metadataPublic.picture = "original.png"
++			claims.metadataAdmin.phoneNumber = "111"
++
++			// Set up a provider with update_identity_on_login: automatic.
++			viperSetProviderConfig(t, conf,
++				newOIDCProvider(t, ts, remotePublic, remoteAdmin, "valid", func(c *oidc.Configuration) {
++					c.UpdateIdentityOnLogin = oidc.UpdateIdentityOnLoginAutomatic
++				}),
++			)
++
++			t.Run("step=register", func(t *testing.T) {
++				r := newBrowserRegistrationFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++				assertIdentity(t, res, body)
++			})
++
++			t.Run("step=login with changed claims updates identity", func(t *testing.T) {
++				claims.traits.website = "https://updated.example.com"
++				claims.metadataPublic.picture = "updated.png"
++				claims.metadataAdmin.phoneNumber = "222"
++
++				r := newBrowserLoginFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++
++				assert.Contains(t, res.Request.URL.String(), returnTS.URL, "%s", body)
++				assert.Equal(t, subject, gjson.GetBytes(body, "identity.traits.subject").String(), "%s", body)
++				// as per mapper the original website trait should remain unchanged
++				assert.Equal(t, "https://original.example.com", gjson.GetBytes(body, "identity.traits.website").String(), "%s", body)
++				assert.Equal(t, "updated.png", gjson.GetBytes(body, "identity.metadata_public.picture").String(), "%s", body)
++
++				// Verify metadata_admin was updated by reading the identity from the admin API.
++				identityID := gjson.GetBytes(body, "identity.id").String()
++				i, err := reg.PrivilegedIdentityPool().GetIdentityConfidential(ctx, uuid.FromStringOrNil(identityID))
++				require.NoError(t, err)
++				assert.Equal(t, "222", gjson.GetBytes(i.MetadataAdmin, "phone_number").String())
++			})
++		})
++
++		t.Run("case=should not update identity when claims are unchanged", func(t *testing.T) {
++			subject = "no-change-on-login@ory.sh"
++			scope = []string{"openid", "offline"}
++			claims = idTokenClaims{}
++			claims.traits.website = "https://stable.example.com"
++			claims.metadataPublic.picture = "stable.png"
++
++			viperSetProviderConfig(t, conf,
++				newOIDCProvider(t, ts, remotePublic, remoteAdmin, "valid", func(c *oidc.Configuration) {
++					c.UpdateIdentityOnLogin = oidc.UpdateIdentityOnLoginAutomatic
++				}),
++			)
++
++			t.Run("step=register", func(t *testing.T) {
++				r := newBrowserRegistrationFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++				assertIdentity(t, res, body)
++			})
++
++			t.Run("step=login with same claims does not error", func(t *testing.T) {
++				r := newBrowserLoginFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++
++				assertIdentity(t, res, body)
++			})
++		})
++
++		t.Run("case=should not update identity when update_identity_on_login is never", func(t *testing.T) {
++			subject = "never-update-on-login@ory.sh"
++			scope = []string{"openid", "offline"}
++			claims = idTokenClaims{}
++			claims.traits.website = "https://original.example.com"
++			claims.metadataPublic.picture = "original.png"
++
++			viperSetProviderConfig(t, conf,
++				newOIDCProvider(t, ts, remotePublic, remoteAdmin, "valid"),
++			)
++
++			t.Run("step=register", func(t *testing.T) {
++				r := newBrowserRegistrationFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++				assertIdentity(t, res, body)
++			})
++
++			t.Run("step=login with changed claims does not update identity", func(t *testing.T) {
++				claims.traits.website = "https://changed.example.com"
++				claims.metadataPublic.picture = "changed.png"
++
++				r := newBrowserLoginFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++
++				assert.Contains(t, res.Request.URL.String(), returnTS.URL, "%s", body)
++				assert.Equal(t, subject, gjson.GetBytes(body, "identity.traits.subject").String(), "%s", body)
++				// Traits should still have the original values from registration.
++				assert.Equal(t, "https://original.example.com", gjson.GetBytes(body, "identity.traits.website").String(), "%s", body)
++				assert.Equal(t, "original.png", gjson.GetBytes(body, "identity.metadata_public.picture").String(), "%s", body)
++			})
++		})
++
++		t.Run("case=should update only metadata without changing traits", func(t *testing.T) {
++			subject = "metadata-only-update@ory.sh"
++			scope = []string{"openid", "offline"}
++			claims = idTokenClaims{}
++			claims.traits.website = "https://example.com"
++			claims.metadataPublic.picture = "old-pic.png"
++			claims.metadataAdmin.phoneNumber = "111"
++
++			viperSetProviderConfig(t, conf,
++				newOIDCProvider(t, ts, remotePublic, remoteAdmin, "valid", func(c *oidc.Configuration) {
++					c.UpdateIdentityOnLogin = oidc.UpdateIdentityOnLoginAutomatic
++				}),
++			)
++
++			t.Run("step=register", func(t *testing.T) {
++				r := newBrowserRegistrationFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++				assertIdentity(t, res, body)
++			})
++
++			t.Run("step=login with changed metadata only", func(t *testing.T) {
++				// Traits stay the same, only metadata changes.
++				claims.metadataPublic.picture = "new-pic.png"
++				claims.metadataAdmin.phoneNumber = "222"
++
++				r := newBrowserLoginFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++
++				assert.Contains(t, res.Request.URL.String(), returnTS.URL, "%s", body)
++				assert.Equal(t, "https://example.com", gjson.GetBytes(body, "identity.traits.website").String(), "%s", body)
++				assert.Equal(t, "new-pic.png", gjson.GetBytes(body, "identity.metadata_public.picture").String(), "%s", body)
++
++				// Verify metadata_admin was updated by reading the identity from the admin API.
++				identityID := gjson.GetBytes(body, "identity.id").String()
++				i, err := reg.PrivilegedIdentityPool().GetIdentityConfidential(ctx, uuid.FromStringOrNil(identityID))
++				require.NoError(t, err)
++				assert.Equal(t, "222", gjson.GetBytes(i.MetadataAdmin, "phone_number").String())
++			})
++		})
++
++		t.Run("case=should fail login when mapper is invalid", func(t *testing.T) {
++			subject = "invalid-mapper-on-login@ory.sh"
++			scope = []string{"openid", "offline"}
++			claims = idTokenClaims{}
++			claims.traits.website = "https://example.com"
++
++			// Register with a valid mapper.
++			viperSetProviderConfig(t, conf,
++				newOIDCProvider(t, ts, remotePublic, remoteAdmin, "valid", func(c *oidc.Configuration) {
++					c.UpdateIdentityOnLogin = oidc.UpdateIdentityOnLoginAutomatic
++				}),
++			)
++
++			t.Run("step=register", func(t *testing.T) {
++				r := newBrowserRegistrationFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++				assertIdentity(t, res, body)
++			})
++
++			t.Run("step=login with broken mapper causes error", func(t *testing.T) {
++				// Reconfigure with a mapper that produces invalid output.
++				viperSetProviderConfig(t, conf,
++					newOIDCProvider(t, ts, remotePublic, remoteAdmin, "valid", func(c *oidc.Configuration) {
++						c.UpdateIdentityOnLogin = oidc.UpdateIdentityOnLoginAutomatic
++						c.Mapper = "file://./stub/oidc.invalid-mapper.jsonnet"
++					}),
++				)
++
++				r := newBrowserLoginFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++
++				assertSystemErrorWithReason(t, res, body, http.StatusInternalServerError,
++					"OpenID Connect Jsonnet mapper did not return an object for key identity.traits")
++			})
++		})
++
++		t.Run("case=should preserve existing traits when mapper omits them", func(t *testing.T) {
++			subject = "preserve-traits-on-login@ory.sh"
++			scope = []string{"openid", "offline"}
++			claims = idTokenClaims{}
++			claims.traits.website = "https://example.com"
++
++			// Register with the standard mapper (includes subject and website in traits).
++			viperSetProviderConfig(t, conf,
++				newOIDCProvider(t, ts, remotePublic, remoteAdmin, "valid", func(c *oidc.Configuration) {
++					c.UpdateIdentityOnLogin = oidc.UpdateIdentityOnLoginAutomatic
++				}),
++			)
++
++			t.Run("step=register", func(t *testing.T) {
++				r := newBrowserRegistrationFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++				assertIdentity(t, res, body)
++			})
++
++			t.Run("step=login with mapper that omits subject preserves it via merge", func(t *testing.T) {
++				// Reconfigure with a mapper that omits the "subject" trait but
++				// outputs a new website. Merge should preserve subject from the
++				// existing identity.
++				claims.traits.website = "https://new.example.com"
++				viperSetProviderConfig(t, conf,
++					newOIDCProvider(t, ts, remotePublic, remoteAdmin, "valid", func(c *oidc.Configuration) {
++						c.UpdateIdentityOnLogin = oidc.UpdateIdentityOnLoginAutomatic
++						c.Mapper = "file://./stub/oidc.missing-subject.jsonnet"
++					}),
++				)
++
++				r := newBrowserLoginFlow(t, returnTS.URL, time.Minute)
++				action := assertFormValues(t, r.ID, "valid")
++				res, body := makeRequest(t, "valid", action, url.Values{})
++
++				assert.Contains(t, res.Request.URL.String(), returnTS.URL, "%s", body)
++				// Subject should be preserved from the existing identity via merge.
++				assert.Equal(t, subject, gjson.GetBytes(body, "identity.traits.subject").String(), "%s", body)
++				// Website should be updated from the new mapper output.
++				assert.Equal(t, "https://new.example.com", gjson.GetBytes(body, "identity.traits.website").String(), "%s", body)
++			})
++		})
++	})
++
+ 	t.Run("method=TestPopulateSignUpMethod", func(t *testing.T) {
+ 		conf.MustSet(ctx, config.ViperKeyPublicBaseURL, "https://foo/")
+ 
+diff --git a/selfservice/strategy/oidc/strategy_update_identity_test.go b/selfservice/strategy/oidc/strategy_update_identity_test.go
+new file mode 100644
+index 000000000..7494b3474
+--- /dev/null
++++ b/selfservice/strategy/oidc/strategy_update_identity_test.go
+@@ -0,0 +1,513 @@
++// Copyright © 2023 Ory Corp
++// SPDX-License-Identifier: Apache-2.0
++
++package oidc_test
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/gofrs/uuid"
++	"github.com/stretchr/testify/assert"
++	"github.com/stretchr/testify/require"
++
++	"github.com/ory/x/configx"
++	"github.com/ory/x/sqlxx"
++
++	"github.com/ory/kratos/driver/config"
++	"github.com/ory/kratos/identity"
++	"github.com/ory/kratos/pkg"
++	"github.com/ory/kratos/selfservice/strategy/oidc"
++)
++
++type testUpdateProvider struct {
++	config *oidc.Configuration
++}
++
++func (p *testUpdateProvider) Config() *oidc.Configuration {
++	return p.config
++}
++
++func TestEvaluateClaimsMapper(t *testing.T) {
++	_, reg := pkg.NewFastRegistryWithMocks(t)
++	s := oidc.NewStrategy(reg)
++	ctx := context.Background()
++
++	provider := &testUpdateProvider{config: &oidc.Configuration{
++		ID:       "test",
++		Provider: "generic",
++		Mapper:   "file://./stub/oidc.hydra.jsonnet",
++	}}
++
++	claims := &oidc.Claims{
++		Subject: "alice@example.com",
++		Email:   "alice@example.com",
++		Website: "https://example.com",
++		Picture: "https://example.com/alice.png",
++		RawClaims: map[string]any{
++			"groups": []any{"admin", "user"},
++		},
++	}
++
++	t.Run("case=without current identity", func(t *testing.T) {
++		t.Parallel()
++		evaluated, claimsJSON, err := s.EvaluateClaimsMapper(ctx, claims, provider, nil)
++		require.NoError(t, err)
++		assert.NotEmpty(t, evaluated)
++		assert.NotEmpty(t, claimsJSON)
++		assert.Contains(t, evaluated, "alice@example.com")
++		assert.Contains(t, evaluated, "https://example.com")
++	})
++
++	t.Run("case=with current identity", func(t *testing.T) {
++		t.Parallel()
++		currentIdentity := &identity.Identity{
++			Traits:         identity.Traits(`{"subject":"alice@example.com","website":"https://old.example.com"}`),
++			MetadataPublic: []byte(`{"picture":"https://example.com/old.png"}`),
++			MetadataAdmin:  []byte(`{}`),
++		}
++
++		providerWithIdentity := &testUpdateProvider{config: &oidc.Configuration{
++			ID:       "test",
++			Provider: "generic",
++			Mapper:   "file://./stub/oidc.update-identity.jsonnet",
++		}}
++
++		evaluated, _, err := s.EvaluateClaimsMapper(ctx, claims, providerWithIdentity, currentIdentity)
++		require.NoError(t, err)
++		assert.NotEmpty(t, evaluated)
++		assert.Contains(t, evaluated, "alice@example.com")
++	})
++}
++
++func TestUpdateIdentityFromClaims(t *testing.T) {
++	_, reg := pkg.NewFastRegistryWithMocks(t, configx.WithValues(map[string]any{
++		config.ViperKeyIdentitySchemas: config.Schemas{
++			{ID: "default", URL: "file://./stub/registration.schema.json"},
++		},
++		config.ViperKeyDefaultIdentitySchemaID: "default",
++	}))
++	s := oidc.NewStrategy(reg)
++	ctx := context.Background()
++
++	provider := &testUpdateProvider{config: &oidc.Configuration{
++		ID:       "test",
++		Provider: "generic",
++		Mapper:   "file://./stub/oidc.hydra.jsonnet",
++	}}
++
++	t.Run("case=detects changed traits", func(t *testing.T) {
++		t.Parallel()
++		i := &identity.Identity{
++			SchemaID:       "default",
++			Traits:         identity.Traits(`{"subject":"alice@example.com","website":"https://old.example.com"}`),
++			MetadataPublic: []byte(`{}`),
++			MetadataAdmin:  []byte(`{}`),
++		}
++
++		claims := &oidc.Claims{
++			Subject: "alice@example.com",
++			Website: "https://new.example.com",
++			RawClaims: map[string]any{
++				"groups": []any{"admin"},
++			},
++		}
++
++		changed, err := s.UpdateIdentityFromClaims(ctx, claims, provider, i)
++		require.NoError(t, err)
++		assert.True(t, changed, "identity should be marked as changed")
++
++		// The mapper keeps the existing website, so only the new group is added.
++		assert.Contains(t, string(i.Traits), "https://old.example.com", "existing website should be preserved")
++		assert.Contains(t, string(i.Traits), "admin")
++	})
++
++	t.Run("case=detects changed metadata", func(t *testing.T) {
++		t.Parallel()
++		i := &identity.Identity{
++			SchemaID:       "default",
++			Traits:         identity.Traits(`{"subject":"alice@example.com"}`),
++			MetadataPublic: []byte(`{}`),
++			MetadataAdmin:  []byte(`{}`),
++		}
++
++		claims := &oidc.Claims{
++			Subject:     "alice@example.com",
++			Picture:     "https://example.com/new-pic.png",
++			PhoneNumber: "+1234567890",
++			RawClaims:   map[string]any{"_placeholder": true},
++		}
++
++		changed, err := s.UpdateIdentityFromClaims(ctx, claims, provider, i)
++		require.NoError(t, err)
++		assert.True(t, changed, "identity should be marked as changed due to metadata")
++
++		assert.Contains(t, string(i.MetadataPublic), "new-pic.png")
++		assert.Contains(t, string(i.MetadataAdmin), "+1234567890")
++	})
++
++	t.Run("case=no change when claims match existing identity", func(t *testing.T) {
++		t.Parallel()
++		i := &identity.Identity{
++			SchemaID:       "default",
++			Traits:         identity.Traits(`{"subject":"alice@example.com","website":"https://example.com"}`),
++			MetadataPublic: []byte(`{"picture":"https://example.com/alice.png"}`),
++			MetadataAdmin:  []byte(`{"phone_number":"+1234567890"}`),
++		}
++
++		claims := &oidc.Claims{
++			Subject:     "alice@example.com",
++			Website:     "https://example.com",
++			Picture:     "https://example.com/alice.png",
++			PhoneNumber: "+1234567890",
++			RawClaims:   map[string]any{"_placeholder": true},
++		}
++
++		changed, err := s.UpdateIdentityFromClaims(ctx, claims, provider, i)
++		require.NoError(t, err)
++		assert.False(t, changed, "identity should not be marked as changed when claims match")
++	})
++
++	t.Run("case=does not touch credentials", func(t *testing.T) {
++		t.Parallel()
++		originalCreds := map[identity.CredentialsType]identity.Credentials{
++			identity.CredentialsTypeOIDC: {
++				Type:   identity.CredentialsTypeOIDC,
++				Config: []byte(`{"providers":[{"subject":"alice","provider":"test"}]}`),
++			},
++		}
++		i := &identity.Identity{
++			Traits:         identity.Traits(`{"subject":"alice@example.com"}`),
++			MetadataPublic: []byte(`{}`),
++			MetadataAdmin:  []byte(`{}`),
++			Credentials:    originalCreds,
++		}
++
++		claims := &oidc.Claims{
++			Subject:   "alice@example.com",
++			Website:   "https://new.example.com",
++			RawClaims: map[string]any{"_placeholder": true},
++		}
++
++		_, err := s.UpdateIdentityFromClaims(ctx, claims, provider, i)
++		require.NoError(t, err)
++
++		// Credentials must remain unchanged.
++		assert.Equal(t, originalCreds, i.Credentials)
++	})
++
++	t.Run("case=identity context available in jsonnet", func(t *testing.T) {
++		t.Parallel()
++		providerWithIdentityMapper := &testUpdateProvider{config: &oidc.Configuration{
++			ID:       "test",
++			Provider: "generic",
++			Mapper:   "file://./stub/oidc.update-identity.jsonnet",
++		}}
++
++		i := &identity.Identity{
++			SchemaID:       "default",
++			Traits:         identity.Traits(`{"subject":"alice@example.com","website":"https://old.example.com"}`),
++			MetadataPublic: []byte(`{"existing_field":"keep-me","picture":"https://example.com/old.png"}`),
++			MetadataAdmin:  []byte(`{}`),
++		}
++
++		claims := &oidc.Claims{
++			Subject:   "alice@example.com",
++			Website:   "https://new.example.com",
++			Picture:   "https://example.com/new.png",
++			RawClaims: map[string]any{"_placeholder": true},
++		}
++
++		changed, err := s.UpdateIdentityFromClaims(ctx, claims, providerWithIdentityMapper, i)
++		require.NoError(t, err)
++		assert.True(t, changed)
++
++		// The mapper should preserve existing_field from the current identity's metadata.
++		assert.Contains(t, string(i.MetadataPublic), "keep-me")
++		// The mapper should update picture from the new claims.
++		assert.Contains(t, string(i.MetadataPublic), "new.png")
++	})
++
++	t.Run("case=mapper that omits traits preserves existing via merge", func(t *testing.T) {
++		t.Parallel()
++		providerMissingSubject := &testUpdateProvider{config: &oidc.Configuration{
++			ID:       "test",
++			Provider: "generic",
++			// This mapper outputs website but omits the required "subject" trait.
++			Mapper: "file://./stub/oidc.missing-subject.jsonnet",
++		}}
++
++		i := &identity.Identity{
++			SchemaID:       "default",
++			Traits:         identity.Traits(`{"subject":"alice@example.com","website":"https://example.com"}`),
++			MetadataPublic: []byte(`{}`),
++			MetadataAdmin:  []byte(`{}`),
++		}
++
++		claims := &oidc.Claims{
++			Subject:   "alice@example.com",
++			Website:   "https://new.example.com",
++			RawClaims: map[string]any{"_placeholder": true},
++		}
++
++		// The mapper omits "subject", but merge preserves it from the existing identity.
++		changed, err := s.UpdateIdentityFromClaims(ctx, claims, providerMissingSubject, i)
++		require.NoError(t, err)
++		assert.True(t, changed, "website changed")
++		assert.Contains(t, string(i.Traits), "alice@example.com", "subject should be preserved")
++		assert.Contains(t, string(i.Traits), "https://new.example.com", "website should be updated")
++	})
++
++	t.Run("case=nil metadata fields are coalesced to empty objects", func(t *testing.T) {
++		t.Parallel()
++		// Identity with nil metadata — simulates an identity that was created
++		// without metadata (e.g., password registration).
++		i := &identity.Identity{
++			SchemaID:       "default",
++			Traits:         identity.Traits(`{"subject":"alice@example.com"}`),
++			MetadataPublic: nil,
++			MetadataAdmin:  nil,
++		}
++
++		providerWithIdentity := &testUpdateProvider{config: &oidc.Configuration{
++			ID:       "test",
++			Provider: "generic",
++			Mapper:   "file://./stub/oidc.update-identity.jsonnet",
++		}}
++
++		claims := &oidc.Claims{
++			Subject:   "alice@example.com",
++			Website:   "https://example.com",
++			RawClaims: map[string]any{"_placeholder": true},
++		}
++
++		// Should not crash even though metadata fields are nil — the coalesce
++		// function converts nil to {} before passing to Jsonnet.
++		_, err := s.UpdateIdentityFromClaims(ctx, claims, providerWithIdentity, i)
++		require.NoError(t, err)
++	})
++
++	t.Run("case=verified addresses are applied from mapper output", func(t *testing.T) {
++		t.Parallel()
++		// Use a schema with verification enabled so Validate populates VerifiableAddresses.
++		_, verifyReg := pkg.NewFastRegistryWithMocks(t, configx.WithValues(map[string]any{
++			config.ViperKeyIdentitySchemas: config.Schemas{
++				{ID: "with-verification", URL: "file://./stub/registration-with-verification.schema.json"},
++			},
++			config.ViperKeyDefaultIdentitySchemaID: "with-verification",
++		}))
++		verifyStrategy := oidc.NewStrategy(verifyReg)
++
++		i := &identity.Identity{
++			SchemaID:       "with-verification",
++			Traits:         identity.Traits(`{"subject":"alice@example.com"}`),
++			MetadataPublic: []byte(`{}`),
++			MetadataAdmin:  []byte(`{}`),
++		}
++
++		claims := &oidc.Claims{
++			Subject: "alice@example.com",
++			RawClaims: map[string]any{
++				"groups": []any{"admin"},
++			},
++		}
++
++		// The hydra mapper outputs verified_addresses: [{via: "email", value: claims.sub}].
++		changed, err := verifyStrategy.UpdateIdentityFromClaims(ctx, claims, provider, i)
++		require.NoError(t, err)
++		assert.True(t, changed)
++
++		// The address should now be verified.
++		require.Len(t, i.VerifiableAddresses, 1)
++		assert.True(t, i.VerifiableAddresses[0].Verified)
++		assert.Equal(t, identity.VerifiableAddressStatusCompleted, i.VerifiableAddresses[0].Status)
++		assert.NotNil(t, i.VerifiableAddresses[0].VerifiedAt)
++	})
++
++	t.Run("case=already verified addresses are not re-verified", func(t *testing.T) {
++		t.Parallel()
++		_, verifyReg := pkg.NewFastRegistryWithMocks(t, configx.WithValues(map[string]any{
++			config.ViperKeyIdentitySchemas: config.Schemas{
++				{ID: "with-verification", URL: "file://./stub/registration-with-verification.schema.json"},
++			},
++			config.ViperKeyDefaultIdentitySchemaID: "with-verification",
++		}))
++		verifyStrategy := oidc.NewStrategy(verifyReg)
++
++		// Use subject-only mapper so traits don't change, isolating the
++		// verified address behavior.
++		providerSubjectOnly := &testUpdateProvider{config: &oidc.Configuration{
++			ID:       "test",
++			Provider: "generic",
++			Mapper:   "file://./stub/oidc.subject-only.jsonnet",
++		}}
++
++		originalVerifiedAt := sqlxx.NullTime(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC))
++		i := &identity.Identity{
++			SchemaID:       "with-verification",
++			Traits:         identity.Traits(`{"subject":"alice@example.com"}`),
++			MetadataPublic: []byte(`{}`),
++			MetadataAdmin:  []byte(`{}`),
++			VerifiableAddresses: []identity.VerifiableAddress{
++				{
++					Value:      "alice@example.com",
++					Via:        identity.AddressTypeEmail,
++					Status:     identity.VerifiableAddressStatusCompleted,
++					Verified:   true,
++					VerifiedAt: &originalVerifiedAt,
++				},
++			},
++			RecoveryAddresses: []identity.RecoveryAddress{
++				{
++					Value: "alice@example.com",
++					Via:   identity.AddressTypeEmail,
++				},
++			},
++		}
++
++		claims := &oidc.Claims{
++			Subject:   "alice@example.com",
++			RawClaims: map[string]any{"_placeholder": true},
++		}
++
++		changed, err := verifyStrategy.UpdateIdentityFromClaims(ctx, claims, providerSubjectOnly, i)
++		require.NoError(t, err)
++		// No change — traits are the same, address was already verified.
++		assert.False(t, changed)
++
++		// VerifiedAt should not be updated.
++		require.Len(t, i.VerifiableAddresses, 1)
++		assert.True(t, i.VerifiableAddresses[0].Verified)
++		assert.Equal(t, &originalVerifiedAt, i.VerifiableAddresses[0].VerifiedAt)
++	})
++
++	t.Run("case=mapper that omits metadata preserves existing values", func(t *testing.T) {
++		t.Parallel()
++		// This mapper only outputs traits, not metadata_public or metadata_admin.
++		providerTraitsOnly := &testUpdateProvider{config: &oidc.Configuration{
++			ID:       "test",
++			Provider: "generic",
++			Mapper:   "file://./stub/oidc.traits-only.jsonnet",
++		}}
++
++		i := &identity.Identity{
++			SchemaID:       "default",
++			Traits:         identity.Traits(`{"subject":"alice@example.com"}`),
++			MetadataPublic: []byte(`{"preserved":"yes"}`),
++			MetadataAdmin:  []byte(`{"secret":"admin-data"}`),
++		}
++
++		claims := &oidc.Claims{
++			Subject:   "alice@example.com",
++			Website:   "https://new.example.com",
++			RawClaims: map[string]any{"_placeholder": true},
++		}
++
++		changed, err := s.UpdateIdentityFromClaims(ctx, claims, providerTraitsOnly, i)
++		require.NoError(t, err)
++		assert.True(t, changed, "traits changed (website added)")
++
++		// Metadata should be preserved since the mapper doesn't output metadata keys.
++		assert.Equal(t, `{"preserved":"yes"}`, string(i.MetadataPublic))
++		assert.Equal(t, `{"secret":"admin-data"}`, string(i.MetadataAdmin))
++	})
++
++	t.Run("case=recovery addresses survive UpdateIdentityFromClaims", func(t *testing.T) {
++		t.Parallel()
++		_, verifyReg := pkg.NewFastRegistryWithMocks(t, configx.WithValues(map[string]any{
++			config.ViperKeyIdentitySchemas: config.Schemas{
++				{ID: "with-verification", URL: "file://./stub/registration-with-verification.schema.json"},
++			},
++			config.ViperKeyDefaultIdentitySchemaID: "with-verification",
++		}))
++		verifyStrategy := oidc.NewStrategy(verifyReg)
++
++		recoveryID := uuid.Must(uuid.NewV4())
++		i := &identity.Identity{
++			SchemaID:       "with-verification",
++			Traits:         identity.Traits(`{"subject":"alice@example.com"}`),
++			MetadataPublic: []byte(`{}`),
++			MetadataAdmin:  []byte(`{}`),
++			RecoveryAddresses: []identity.RecoveryAddress{
++				{
++					ID:    recoveryID,
++					Value: "alice@example.com",
++					Via:   identity.AddressTypeEmail,
++				},
++			},
++		}
++
++		claims := &oidc.Claims{
++			Subject:   "alice@example.com",
++			RawClaims: map[string]any{"_placeholder": true},
++		}
++
++		_, err := verifyStrategy.UpdateIdentityFromClaims(ctx, claims, provider, i)
++		require.NoError(t, err)
++
++		// Recovery address should survive the Validate call.
++		require.Len(t, i.RecoveryAddresses, 1)
++		assert.Equal(t, "alice@example.com", i.RecoveryAddresses[0].Value)
++		assert.Equal(t, identity.AddressTypeEmail, i.RecoveryAddresses[0].Via)
++		// The ID should be preserved from the original.
++		assert.Equal(t, recoveryID, i.RecoveryAddresses[0].ID)
++	})
++
++	t.Run("case=verified status is sticky when mapper stops asserting it", func(t *testing.T) {
++		t.Parallel()
++		_, verifyReg := pkg.NewFastRegistryWithMocks(t, configx.WithValues(map[string]any{
++			config.ViperKeyIdentitySchemas: config.Schemas{
++				{ID: "with-verification", URL: "file://./stub/registration-with-verification.schema.json"},
++			},
++			config.ViperKeyDefaultIdentitySchemaID: "with-verification",
++		}))
++		verifyStrategy := oidc.NewStrategy(verifyReg)
++
++		// Use a mapper that does NOT output verified_addresses.
++		providerNoVerify := &testUpdateProvider{config: &oidc.Configuration{
++			ID:       "test",
++			Provider: "generic",
++			Mapper:   "file://./stub/oidc.subject-only.jsonnet",
++		}}
++
++		originalVerifiedAt := sqlxx.NullTime(time.Date(2024, 6, 15, 0, 0, 0, 0, time.UTC))
++		i := &identity.Identity{
++			SchemaID:       "with-verification",
++			Traits:         identity.Traits(`{"subject":"alice@example.com"}`),
++			MetadataPublic: []byte(`{}`),
++			MetadataAdmin:  []byte(`{}`),
++			VerifiableAddresses: []identity.VerifiableAddress{
++				{
++					Value:      "alice@example.com",
++					Via:        identity.AddressTypeEmail,
++					Status:     identity.VerifiableAddressStatusCompleted,
++					Verified:   true,
++					VerifiedAt: &originalVerifiedAt,
++				},
++			},
++			RecoveryAddresses: []identity.RecoveryAddress{
++				{
++					Value: "alice@example.com",
++					Via:   identity.AddressTypeEmail,
++				},
++			},
++		}
++
++		claims := &oidc.Claims{
++			Subject:   "alice@example.com",
++			RawClaims: map[string]any{"_placeholder": true},
++		}
++
++		changed, err := verifyStrategy.UpdateIdentityFromClaims(ctx, claims, providerNoVerify, i)
++		require.NoError(t, err)
++		assert.False(t, changed, "nothing should change")
++
++		// Verified status should be sticky — the mapper not asserting it
++		// should not revoke verification.
++		require.Len(t, i.VerifiableAddresses, 1)
++		assert.True(t, i.VerifiableAddresses[0].Verified)
++		assert.Equal(t, identity.VerifiableAddressStatusCompleted, i.VerifiableAddresses[0].Status)
++		assert.Equal(t, &originalVerifiedAt, i.VerifiableAddresses[0].VerifiedAt)
++	})
++}
+diff --git a/selfservice/strategy/oidc/stub/oidc.hydra.jsonnet b/selfservice/strategy/oidc/stub/oidc.hydra.jsonnet
+index 982f5fca3..0cebce2d8 100644
+--- a/selfservice/strategy/oidc/stub/oidc.hydra.jsonnet
++++ b/selfservice/strategy/oidc/stub/oidc.hydra.jsonnet
+@@ -1,4 +1,8 @@
+ local claims = std.extVar('claims');
++local identity = std.extVar('identity');
++
++// Keep the website if the user has set one.
++local website = std.get(identity.traits, "website", std.get(claims, "website", ""));
+ 
+ if std.length(claims.sub) == 0 then
+   error 'claim sub not set'
+@@ -7,7 +11,7 @@ else
+     identity: {
+       traits: {
+         subject: claims.sub,
+-        [if "website" in claims then "website" else null]: claims.website,
++        [if website != "" then "website" else null]: website,
+         [if "groups" in claims.raw_claims then "groups" else null]: claims.raw_claims.groups,
+       },
+       metadata_public: {
+diff --git a/selfservice/strategy/oidc/stub/oidc.invalid-mapper.jsonnet b/selfservice/strategy/oidc/stub/oidc.invalid-mapper.jsonnet
+new file mode 100644
+index 000000000..2f5756547
+--- /dev/null
++++ b/selfservice/strategy/oidc/stub/oidc.invalid-mapper.jsonnet
+@@ -0,0 +1,7 @@
++local claims = std.extVar('claims');
++
++{
++  identity: {
++    traits: "this is not an object",
++  },
++}
+diff --git a/selfservice/strategy/oidc/stub/oidc.missing-subject.jsonnet b/selfservice/strategy/oidc/stub/oidc.missing-subject.jsonnet
+new file mode 100644
+index 000000000..3b2b27824
+--- /dev/null
++++ b/selfservice/strategy/oidc/stub/oidc.missing-subject.jsonnet
+@@ -0,0 +1,9 @@
++local claims = std.extVar('claims');
++
++{
++  identity: {
++    traits: {
++      website: claims.website,
++    },
++  },
++}
+diff --git a/selfservice/strategy/oidc/stub/oidc.subject-only.jsonnet b/selfservice/strategy/oidc/stub/oidc.subject-only.jsonnet
+new file mode 100644
+index 000000000..23626ba39
+--- /dev/null
++++ b/selfservice/strategy/oidc/stub/oidc.subject-only.jsonnet
+@@ -0,0 +1,12 @@
++local claims = std.extVar('claims');
++
++if std.length(claims.sub) == 0 then
++  error 'claim sub not set'
++else
++  {
++    identity: {
++      traits: {
++        subject: claims.sub,
++      },
++    },
++  }
+diff --git a/selfservice/strategy/oidc/stub/oidc.traits-only.jsonnet b/selfservice/strategy/oidc/stub/oidc.traits-only.jsonnet
+new file mode 100644
+index 000000000..ced6a0226
+--- /dev/null
++++ b/selfservice/strategy/oidc/stub/oidc.traits-only.jsonnet
+@@ -0,0 +1,13 @@
++local claims = std.extVar('claims');
++
++if std.length(claims.sub) == 0 then
++  error 'claim sub not set'
++else
++  {
++    identity: {
++      traits: {
++        subject: claims.sub,
++        [if "website" in claims then "website" else null]: claims.website,
++      },
++    },
++  }
+diff --git a/selfservice/strategy/oidc/stub/oidc.update-identity.jsonnet b/selfservice/strategy/oidc/stub/oidc.update-identity.jsonnet
+new file mode 100644
+index 000000000..5fedccb7c
+--- /dev/null
++++ b/selfservice/strategy/oidc/stub/oidc.update-identity.jsonnet
+@@ -0,0 +1,26 @@
++local claims = std.extVar('claims');
++local identity = std.extVar('identity');
++
++if std.length(claims.sub) == 0 then
++  error 'claim sub not set'
++else
++  {
++    identity: {
++      traits: {
++        subject: claims.sub,
++        [if "website" in claims then "website" else null]: claims.website,
++        // Keep existing groups if the claims don't provide them.
++        [if "groups" in claims.raw_claims then "groups" else null]:
++          claims.raw_claims.groups,
++      },
++      metadata_public: {
++        [if "picture" in claims then "picture" else null]: claims.picture,
++        // Preserve existing metadata that isn't in the claims.
++        [if "existing_field" in identity.metadata_public then "existing_field" else null]:
++          identity.metadata_public.existing_field,
++      },
++      metadata_admin: {
++        [if "phone_number" in claims then "phone_number" else null]: claims.phone_number,
++      },
++    },
++  }
+diff --git a/selfservice/strategy/oidc/stub/registration-with-verification.schema.json b/selfservice/strategy/oidc/stub/registration-with-verification.schema.json
+new file mode 100644
+index 000000000..8ce3e0940
+--- /dev/null
++++ b/selfservice/strategy/oidc/stub/registration-with-verification.schema.json
+@@ -0,0 +1,44 @@
++{
++  "$id": "https://example.com/person-with-verification.schema.json",
++  "$schema": "http://json-schema.org/draft-07/schema#",
++  "title": "Person",
++  "type": "object",
++  "properties": {
++    "traits": {
++      "type": "object",
++      "properties": {
++        "subject": {
++          "format": "email",
++          "type": "string",
++          "ory.sh/kratos": {
++            "credentials": {
++              "password": {
++                "identifier": true
++              }
++            },
++            "verification": {
++              "via": "email"
++            },
++            "recovery": {
++              "via": "email"
++            }
++          }
++        },
++        "website": {
++          "type": "string",
++          "format": "uri"
++        },
++        "groups": {
++          "type": "array",
++          "items": {
++            "type": "string"
++          }
++        }
++      },
++      "required": [
++        "subject"
++      ]
++    }
++  },
++  "additionalProperties": false
++}
 diff --git a/test/e2e/cypress/integration/profiles/oidc-provider/update.spec.ts b/test/e2e/cypress/integration/profiles/oidc-provider/update.spec.ts
 new file mode 100644
 index 000000000..2078162c5

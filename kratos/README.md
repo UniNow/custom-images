@@ -12,6 +12,11 @@ The patch contains:
 - `feature_flags.password_profile_registration_node_group` is read from where the config schema defines it
   (upstream reads `selfservice.methods.password.config...`, declined in
   [ory/kratos#4499](https://github.com/ory/kratos/pull/4499)).
+- `update_identity_on_login` per OIDC provider (`never` by default, or `automatic`): on every OIDC login
+  the Jsonnet claims mapper is re-evaluated and the identity's traits and metadata are updated if they
+  changed. Traits the mapper does not output are preserved. Backported from upstream `master`
+  (`4fcb2999a`) together with its follow-up fix `f771a1dae`, which seeds the `identity` extVar so a
+  mapper may read `std.extVar('identity')` during registration as well. No Ory release ships this yet.
 - Tests, snapshots and an e2e spec for the above, so the patch can be rebased with its tests.
 
 ## Usage
@@ -37,7 +42,7 @@ Merging a bump only builds the image. Rolling it out is a separate step in campu
 ## How to rebase the patch
 
 The patch is maintained as a branch in the fork [UniNow/kratos](https://github.com/UniNow/kratos)
-(currently `uninow-v26.2.0`, three commits on top of the tag `v26.2.0`).
+(currently `uninow-v26.2.0`, six commits on top of the tag `v26.2.0`).
 
 1. In the fork, create a branch from the new release tag and cherry-pick the commits of the previous
    patch branch (or rebase the branch with `git rebase --onto vNEW vOLD`). Resolve conflicts, run
