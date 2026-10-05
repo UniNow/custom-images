@@ -17,6 +17,12 @@ The patch contains:
   changed. Traits the mapper does not output are preserved. Backported from upstream `master`
   (`4fcb2999a`) together with its follow-up fix `f771a1dae`, which seeds the `identity` extVar so a
   mapper may read `std.extVar('identity')` during registration as well. No Ory release ships this yet.
+- `20251105000000000003` fills `identity_id` under an `ACCESS EXCLUSIVE` lock before setting the column
+  `NOT NULL`. Upstream's backfills are recorded as applied once they finish and never run again, so on a
+  rolling upgrade the previous release - which predates the column - keeps writing NULLs while they run, and
+  the constraint then fails. That stalls the rollout indefinitely: the new pods never start, so the old ones
+  keep serving and keep producing NULLs. Only the postgres variant is patched; the resulting schema matches
+  upstream, and namespaces that already applied the migration skip it by version.
 - Tests, snapshots and an e2e spec for the above, so the patch can be rebased with its tests.
 
 ## Usage
@@ -42,7 +48,7 @@ Merging a bump only builds the image. Rolling it out is a separate step in campu
 ## How to rebase the patch
 
 The patch is maintained as a branch in the fork [UniNow/kratos](https://github.com/UniNow/kratos)
-(currently `uninow-v26.2.0`, six commits on top of the tag `v26.2.0`).
+(currently `uninow-v26.2.0`, seven commits on top of the tag `v26.2.0`).
 
 1. In the fork, create a branch from the new release tag and cherry-pick the commits of the previous
    patch branch (or rebase the branch with `git rebase --onto vNEW vOLD`). Resolve conflicts, run
