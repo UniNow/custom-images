@@ -77,7 +77,7 @@ jobs:
             ${{ env.KRATOS_VERSION }}-${{ steps.build.outputs.sha7 }}
 
       - name: Build and push
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: kratos-upstream
           file: kratos-upstream/.docker/Dockerfile-build
